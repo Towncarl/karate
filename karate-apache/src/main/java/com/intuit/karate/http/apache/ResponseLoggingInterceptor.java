@@ -24,7 +24,8 @@
 package com.intuit.karate.http.apache;
 
 import com.intuit.karate.FileUtils;
-import com.intuit.karate.ScriptContext;
+import com.intuit.karate.core.ScenarioContext;
+import com.intuit.karate.http.HttpRequest;
 import java.io.IOException;
 import org.apache.http.HttpEntity;
 import org.apache.http.HttpException;
@@ -38,22 +39,21 @@ import org.apache.http.protocol.HttpContext;
  */
 public class ResponseLoggingInterceptor implements HttpResponseInterceptor {
 
-    private final ScriptContext context;
+    private final ScenarioContext context;
     private final RequestLoggingInterceptor requestInterceptor;
 
-    public ResponseLoggingInterceptor(RequestLoggingInterceptor requestInterceptor, ScriptContext context) {
+    public ResponseLoggingInterceptor(RequestLoggingInterceptor requestInterceptor, ScenarioContext context) {
         this.requestInterceptor = requestInterceptor;
         this.context = context;
     }
 
     @Override
     public void process(HttpResponse response, HttpContext httpContext) throws HttpException, IOException {
-        long endTime = System.currentTimeMillis();
-        long responseTime = endTime - requestInterceptor.getStartTime();
-        context.getPrevRequest().setEndTime(endTime);
+        HttpRequest actual = context.getPrevRequest();
+        actual.stopTimer();
         int id = requestInterceptor.getCounter().get();
         StringBuilder sb = new StringBuilder();
-        sb.append("response time in milliseconds: ").append(responseTime).append('\n');
+        sb.append("response time in milliseconds: ").append(actual.getResponseTimeFormatted()).append('\n');
         sb.append(id).append(" < ").append(response.getStatusLine().getStatusCode()).append('\n');
         LoggingUtils.logHeaders(sb, id, '<', response);
         HttpEntity entity = response.getEntity();

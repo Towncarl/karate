@@ -10,12 +10,14 @@ import java.util.Map;
 public class ScriptValueMap extends HashMap<String, ScriptValue> {
 
     public static final String VAR_RESPONSE = "response";
+    public static final String VAR_RESPONSE_BYTES = "responseBytes";
     public static final String VAR_RESPONSE_COOKIES = "responseCookies";
     public static final String VAR_RESPONSE_HEADERS = "responseHeaders";
     public static final String VAR_RESPONSE_STATUS = "responseStatus";
     public static final String VAR_RESPONSE_TIME = "responseTime";
 
     public static final String VAR_REQUEST = "request";
+    public static final String VAR_REQUEST_BYTES = "requestBytes";
     public static final String VAR_REQUEST_URL_BASE = "requestUrlBase";
     public static final String VAR_REQUEST_URI = "requestUri";
     public static final String VAR_REQUEST_METHOD = "requestMethod";
@@ -41,9 +43,9 @@ public class ScriptValueMap extends HashMap<String, ScriptValue> {
         return new ScriptObjectMap(this);
     }
 
-    public ScriptValueMap copy() {
+    public ScriptValueMap copy(boolean deep) {
         ScriptValueMap copy = new ScriptValueMap();
-        forEach((k, v) -> copy.put(k, v));
+        forEach((k, v) -> copy.put(k, deep ? v.copy() : v));
         return copy;
     }
 

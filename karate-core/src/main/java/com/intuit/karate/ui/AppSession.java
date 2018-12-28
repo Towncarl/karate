@@ -1,7 +1,7 @@
 /*
  * The MIT License
  *
- * Copyright 2017 Intuit Inc.
+ * Copyright 2018 Intuit Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -24,26 +24,17 @@
 package com.intuit.karate.ui;
 
 import com.intuit.karate.CallContext;
-import com.intuit.karate.FileUtils;
-import com.intuit.karate.ScriptEnv;
-import com.intuit.karate.ScriptValue;
-import com.intuit.karate.ScriptValueMap;
-import com.intuit.karate.cucumber.CucumberUtils;
-import com.intuit.karate.cucumber.FeatureFilePath;
-import com.intuit.karate.cucumber.FeatureSection;
-import com.intuit.karate.cucumber.FeatureWrapper;
-import com.intuit.karate.cucumber.KarateBackend;
-import com.intuit.karate.cucumber.ScenarioOutlineWrapper;
-import com.intuit.karate.cucumber.ScenarioWrapper;
-import com.intuit.karate.cucumber.StepWrapper;
+import com.intuit.karate.Logger;
+import com.intuit.karate.core.ExecutionContext;
+import com.intuit.karate.core.Feature;
+import com.intuit.karate.core.FeatureContext;
+import com.intuit.karate.core.FeatureExecutionUnit;
+import com.intuit.karate.core.FeatureParser;
+import com.intuit.karate.core.ScenarioExecutionUnit;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
-import javafx.collections.FXCollections;
-import javafx.collections.ObservableList;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import javafx.scene.layout.BorderPane;
 
 /**
  *
@@ -51,111 +42,98 @@ import org.slf4j.LoggerFactory;
  */
 public class AppSession {
 
-    private static final Logger logger = LoggerFactory.getLogger(AppSession.class);
+    private final Logger logger = new Logger();
+    private final ExecutionContext exec;
+    private final FeatureExecutionUnit featureUnit;
 
-    public final File featureFile;
-    private FeatureWrapper feature; // mutable, can be re-built
-    public final KarateBackend backend;
-    public final HeaderPanel headerPanel;
-    public final FeaturePanel featurePanel;
-    public final VarsPanel varsPanel;
-    public final LogPanel logPanel;
+    private final BorderPane rootPane;
+    private final File workingDir;
+    private final FeatureOutlinePanel featureOutlinePanel;
+    private final LogPanel logPanel;
 
-    public FeatureWrapper getFeature() {
-        return feature;
-    }
-
-    public AppSession(File featureFile, String envString) {
-        this(featureFile, envString, false);
-    }
-
-    public ScriptEnv getEnv() {
-        return backend.getEnv();
-    }
+    private final List<ScenarioPanel> scenarioPanels;  
     
-    public void resetBackendAndVarsTable(String env) {
-        backend.getObjectFactory().reset(env);
-        refreshVarsTable();        
+    private ScenarioExecutionUnit currentlyExecutingScenario;
+    
+    public AppSession(BorderPane rootPane, File workingDir, File featureFile, String env) {
+        this(rootPane, workingDir, FeatureParser.parse(featureFile), env);
+    }     
+    
+    public AppSession(BorderPane rootPane, File workingDir, String featureText, String env) {
+        this(rootPane, workingDir, FeatureParser.parseText(null, featureText), env);
+    }  
+    
+    public AppSession(BorderPane rootPane, File workingDir, Feature feature, String envString) {
+        this(rootPane, workingDir, feature, envString, new CallContext(null, true));
+    }     
+
+    public AppSession(BorderPane rootPane, File workingDir, Feature feature, String env, CallContext callContext) {
+        this.rootPane = rootPane;
+        this.workingDir = workingDir;
+        FeatureContext featureContext = new FeatureContext(env, feature, workingDir, logger);
+        exec = new ExecutionContext(System.currentTimeMillis(), featureContext, callContext, null, null, null);
+        featureUnit = new FeatureExecutionUnit(exec);
+        featureUnit.init();
+        featureOutlinePanel = new FeatureOutlinePanel(this);
+        DragResizer.makeResizable(featureOutlinePanel, false, false, false, true);
+        List<ScenarioExecutionUnit> units = featureUnit.getScenarioExecutionUnits();
+        scenarioPanels = new ArrayList(units.size());
+        units.forEach(unit -> scenarioPanels.add(new ScenarioPanel(this, unit)));
+        rootPane.setLeft(featureOutlinePanel);        
+        logPanel = new LogPanel(logger);
+        DragResizer.makeResizable(logPanel, false, false, true, false);
+        rootPane.setBottom(logPanel);
     }
 
-    public void resetAll(String env) {
-        resetBackendAndVarsTable(env);
-        featurePanel.action(AppAction.RESET);
+    public void resetAll() {
+    	scenarioPanels.forEach(scenarioPanel -> scenarioPanel.reset());
     }
-    
+
     public void runAll() {
-        try {
-            featurePanel.action(AppAction.RUN);
-        } catch (StepException se) {
-            logger.error("step execution paused.");
-        }
+    	scenarioPanels.forEach(scenarioPanel -> scenarioPanel.runAll());
     }
 
-    public AppSession(File featureFile, String envString, boolean test) {
-        this.featureFile = featureFile;
-        FeatureFilePath ffp = FileUtils.parseFeaturePath(featureFile);
-        ScriptEnv env = ScriptEnv.init(envString, ffp.file, ffp.searchPaths);
-        feature = FeatureWrapper.fromFile(ffp.file, env);
-        CallContext callContext = new CallContext(null, true);
-        backend = CucumberUtils.getBackendWithGlue(feature, callContext);
-        if (!test) {
-            headerPanel = new HeaderPanel(this);
-            featurePanel = new FeaturePanel(this);
-            varsPanel = new VarsPanel(this);
-            logPanel = new LogPanel(null);
-        } else {
-            headerPanel = null;
-            featurePanel = null;
-            varsPanel = null;
-            logPanel = null;
+    public BorderPane getRootPane() {
+        return rootPane;
+    }
+
+    public FeatureOutlinePanel getFeatureOutlinePanel() {
+        return featureOutlinePanel;
+    }
+
+    public void setCurrentlyExecutingScenario(ScenarioExecutionUnit unit) {
+        this.currentlyExecutingScenario = unit;
+    }
+
+    public ScenarioExecutionUnit getCurrentlyExecutingScenario() {
+        return currentlyExecutingScenario;
+    }        
+    
+    public void setSelectedScenario(int index) {
+        if (index == -1 || scenarioPanels == null || index > scenarioPanels.size() || scenarioPanels.isEmpty()) {
+            return;
         }
+        rootPane.setCenter(scenarioPanels.get(index));
+    }
+
+    public Logger getLogger() {
+        return logger;
+    }
+
+    public FeatureExecutionUnit getFeatureExecutionUnit() {
+        return featureUnit;
+    }
+
+    public List<ScenarioExecutionUnit> getScenarioExecutionUnits() {
+        return featureUnit.getScenarioExecutionUnits();
     }
 
     public void logVar(Var var) {
-        if (logPanel != null) {
-            logPanel.append(var.toString());
-        }
+        logPanel.append(var.toString());
     }
 
-    public void refreshVarsTable() {
-        varsPanel.refresh();
-    }
-
-    public FeatureSection refresh(FeatureSection section) {
-        return feature.getSection(section.getIndex());
-    }
-
-    public ScenarioOutlineWrapper refresh(ScenarioOutlineWrapper outline) {
-        return feature.getSection(outline.getSection().getIndex()).getScenarioOutline();
-    }
-
-    public ScenarioWrapper refresh(ScenarioWrapper scenario) {
-        return feature.getScenario(scenario.getSection().getIndex(), scenario.getIndex());
-    }
-
-    public StepWrapper refresh(StepWrapper step) {
-        int stepIndex = step.getIndex();
-        int scenarioIndex = step.getScenario().getIndex();
-        int sectionIndex = step.getScenario().getSection().getIndex();
-        return feature.getStep(sectionIndex, scenarioIndex, stepIndex);
-    }
-
-    public void replace(StepWrapper step, String text) {
-        feature = feature.replaceStep(step, text);
-        featurePanel.action(AppAction.REFRESH);
-        headerPanel.initTextContent();
-    }
-
-    public ObservableList<Var> getVars() {
-        if (backend.getStepDefs() == null) {
-            return FXCollections.emptyObservableList();
-        }
-        ScriptValueMap map = backend.getStepDefs().getContext().getVars();
-        List<Var> list = new ArrayList(map.size());
-        for (Map.Entry<String, ScriptValue> entry : map.entrySet()) {
-            list.add(new Var(entry.getKey(), entry.getValue()));
-        }
-        return FXCollections.observableList(list);
-    }
+    public File getWorkingDir() {
+        return workingDir;
+    }        
 
 }

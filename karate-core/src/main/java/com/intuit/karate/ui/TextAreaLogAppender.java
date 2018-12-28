@@ -35,7 +35,11 @@ public class TextAreaLogAppender implements LogAppender {
 
     private final TextArea textArea;
 
-    public TextAreaLogAppender(Logger logger, TextArea textArea) {
+    public static TextAreaLogAppender init(Logger logger, TextArea textArea) {
+        return new TextAreaLogAppender(logger, textArea);
+    }
+    
+    private TextAreaLogAppender(Logger logger, TextArea textArea) {
         this.textArea = textArea;
         logger.setLogAppender(this);
     }
@@ -51,5 +55,10 @@ public class TextAreaLogAppender implements LogAppender {
     public void append(String text) {
         textArea.appendText(text);
     }
+
+    @Override
+    public void close() {
+
+    }    
 
 }

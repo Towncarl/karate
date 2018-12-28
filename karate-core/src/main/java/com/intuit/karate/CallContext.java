@@ -23,48 +23,48 @@
  */
 package com.intuit.karate;
 
-import com.intuit.karate.cucumber.ScenarioInfo;
-import com.intuit.karate.cucumber.StepInterceptor;
-import java.util.List;
+import com.intuit.karate.core.ExecutionHook;
+import com.intuit.karate.core.Feature;
+import com.intuit.karate.core.ScenarioContext;
+import com.intuit.karate.core.ScenarioInfo;
 import java.util.Map;
-import java.util.function.Consumer;
+import com.intuit.karate.core.Tags;
 
 /**
  *
  * @author pthomas3
  */
 public class CallContext {
-    
-    public final ScriptContext parentContext;
+
+    public final Feature feature;
+    public final ScenarioContext context;
     public final int callDepth;
     public final Map<String, Object> callArg;
     public final boolean reuseParentContext;
     public final boolean evalKarateConfig;
     public final int loopIndex;
     public final String httpClientClass;
-    public final Consumer<Runnable> asyncSystem;
-    public final Runnable asyncNext;
-    public final StepInterceptor stepInterceptor;
-    
-    private List<String> tags;
-    private Map<String, List<String>> tagValues;    
+    public final ExecutionHook executionHook;
+    public final boolean perfMode;
+
+    private Tags tags = Tags.EMPTY;
     private ScenarioInfo scenarioInfo;
 
-    public List<String> getTags() {
+    public static CallContext forCall(Feature feature, ScenarioContext context, Map<String, Object> callArg, int loopIndex, boolean reuseParentConfig) {
+        return new CallContext(feature, context, context.callDepth + 1, callArg, loopIndex, reuseParentConfig, false, null, context.executionHook, context.perfMode);
+    }
+
+    public static CallContext forAsync(Feature feature, ExecutionHook hook, Map<String, Object> arg, boolean perfMode) {
+        return new CallContext(feature, null, 0, arg, -1, false, true, null, hook, perfMode);
+    }
+
+    public Tags getTags() {
         return tags;
     }
 
-    public void setTags(List<String> tags) {
+    public void setTags(Tags tags) {
         this.tags = tags;
     }
-
-    public void setTagValues(Map<String, List<String>> tagValues) {
-        this.tagValues = tagValues;
-    }
-
-    public Map<String, List<String>> getTagValues() {
-        return tagValues;
-    }        
 
     public void setScenarioInfo(ScenarioInfo scenarioInfo) {
         this.scenarioInfo = scenarioInfo;
@@ -72,29 +72,29 @@ public class CallContext {
 
     public ScenarioInfo getScenarioInfo() {
         return scenarioInfo;
-    }    
-    
+    }
+
     public boolean isCalled() {
         return callDepth > 0;
     }
-    
+
     public CallContext(Map<String, Object> callArg, boolean evalKarateConfig) {
-        this(null, 0, callArg, -1, false, evalKarateConfig, null, null, null, null);
+        this(null, null, 0, callArg, -1, false, evalKarateConfig, null, null, false);
     }
-    
-    public CallContext(ScriptContext parentContext, int callDepth, Map<String, Object> callArg, int loopIndex,
-        boolean reuseParentContext, boolean evalKarateConfig, String httpClientClass, 
-            Consumer<Runnable> asyncSystem, Runnable asyncNext, StepInterceptor stepInterceptor) {
-        this.parentContext = parentContext;
+
+    public CallContext(Feature feature, ScenarioContext context, int callDepth, Map<String, Object> callArg, int loopIndex,
+            boolean reuseParentContext, boolean evalKarateConfig, String httpClientClass,
+            ExecutionHook executionHook, boolean perfMode) {
+        this.feature = feature;
+        this.context = context;
         this.callDepth = callDepth;
         this.callArg = callArg;
         this.loopIndex = loopIndex;
         this.reuseParentContext = reuseParentContext;
         this.evalKarateConfig = evalKarateConfig;
         this.httpClientClass = httpClientClass;
-        this.asyncSystem = asyncSystem;
-        this.asyncNext = asyncNext;
-        this.stepInterceptor = stepInterceptor;
+        this.executionHook = executionHook;
+        this.perfMode = perfMode;
     }
-    
+
 }

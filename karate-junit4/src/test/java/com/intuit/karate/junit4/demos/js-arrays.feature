@@ -33,6 +33,11 @@ Scenario: json-path can be performed in js
     * def res = call fun
     * match res == [1, 2, 3]
 
+Scenario: set via json-path can be done in js
+    * def json = { foo: [] }
+    * eval karate.set('json', '$.foo[]', { bar: 'baz' })
+    * match json == { foo: [{ bar: 'baz' }] }
+
 Scenario: this seems to be a bug in Nashorn, refer: https://github.com/intuit/karate/issues/225
     adding this test to detect if ever the JDK behavior changes
     * def actual = ({ a: [1, 2, 3]})
@@ -48,7 +53,25 @@ Scenario: karate forEach operation on lists
     * eval karate.forEach(list, fun)
     * match res == [1, 4, 9]
 
-Scenario: karate forEach operation on maps (json)
+Scenario: karate map operation
+    * def fun = function(x){ return x * x }
+    * def list = [1, 2, 3]
+    * def res = karate.map(list, fun)
+    * match res == [1, 4, 9]
+
+Scenario: convert an array into a different shape
+    * def before = [{ foo: 1 }, { foo: 2 }, { foo: 3 }]
+    * def fun = function(x){ return { bar: x.foo } }
+    * def after = karate.map(before, fun)
+    * match after == [{ bar: 1 }, { bar: 2 }, { bar: 3 }]
+
+Scenario: karate filter operation
+    * def fun = function(x){ return x % 2 == 0 }
+    * def list = [1, 2, 3, 4]
+    * def res = karate.filter(list, fun)
+    * match res == [2, 4]
+
+Scenario: karate forEach operation on maps
     * def keys = []
     * def vals = []
     * def idxs = []
@@ -59,23 +82,33 @@ Scenario: karate forEach operation on maps (json)
     * match vals == [2, 4, 6]
     * match idxs == [0, 1, 2]
 
-Scenario: karate map operation
-    * def fun = function(x){ return x * x }
-    * def list = [1, 2, 3]
-    * def res = karate.map(list, fun)
-    * match res == [1, 4, 9]
-
-Scenario: karate filter operation
-    * def fun = function(x){ return x % 2 == 0 }
-    * def list = [1, 2, 3, 4]
-    * def res = karate.filter(list, fun)
-    * match res == [2, 4]
-
 Scenario: karate filter operation, using array indexes
     * def fun = function(x, i){ return i % 2 == 0 }
     * def list = [1, 2, 3, 4]
     * def res = karate.filter(list, fun)
     * match res == [1, 3]
+
+Scenario: karate find index of first match (primitive)
+    * def list = [1, 2, 3, 4]
+    * def searchFor = 3
+    * def foundAt = []
+    * def fun = function(x, i){ if (x == searchFor) foundAt.add(i) }
+    * eval karate.forEach(list, fun)
+    * match foundAt == [2]
+
+Scenario: karate find index of first match (complex)
+    * def list = [{ a: 1, b: 'x'}, { a: 2, b: 'y'}, { a: 3, b: 'z'}]
+    * def searchFor = { a: 2, b: '#string'}
+    * def foundAt = []
+    * def fun = function(x, i){ if (karate.match(x, searchFor).pass) foundAt.add(i) }
+    * eval karate.forEach(list, fun)
+    * match foundAt == [1]
+
+Scenario: simplest way to get the size of a json object
+    * def json = { a: 1, b: 2, c: 3 }
+    * def map = karate.toBean(json, 'java.util.HashMap')
+    * def count = map.size()
+    * match count == 3
 
 Scenario: get last array element (js)
     * def list = [1, 2, 3, 4]
@@ -182,7 +215,7 @@ Scenario: #null, ##null, #present and #notpresent
     * def foo = { }
     * match foo != { a: '#present' }
     * match foo == { a: '#notpresent' }
-    * match foo == { a: '#ignore' }
+    * match foo != { a: '#ignore' }
     * match foo == { a: '##null' }
     * match foo != { a: '#null' }
     * match foo != { a: '#notnull' }

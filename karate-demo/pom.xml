@@ -5,14 +5,14 @@
     <parent>
         <groupId>com.intuit.karate</groupId>
         <artifactId>karate-parent</artifactId>
-        <version>0.8.0</version>
+        <version>0.9.0</version>
     </parent>
     
     <artifactId>karate-demo</artifactId>
     <packaging>jar</packaging>  
     
     <properties>
-        <activemq.version>5.15.2</activemq.version>
+        <activemq.version>5.15.6</activemq.version>
     </properties>
 
     <!-- you will not need all these dependencies for a typical karate project !-->
@@ -27,7 +27,7 @@
         </dependency>        
         <dependency>
             <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-web</artifactId>
+            <artifactId>spring-boot-starter-websocket</artifactId>
             <version>${spring.boot.version}</version>
         </dependency>        
         <dependency>
@@ -67,34 +67,11 @@
             <artifactId>karate-apache</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>
-        </dependency>         
-        <dependency>
-            <groupId>com.intuit.karate</groupId>
-            <artifactId>karate-netty</artifactId>
-            <version>${project.version}</version>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>com.intuit.karate</groupId>
-            <artifactId>karate-gatling</artifactId>
-            <version>${project.version}</version>
-            <scope>test</scope>
-            <exclusions>
-                <!-- spring boot tomcat doesn't like these -->            
-                <exclusion>           
-                    <groupId>org.bouncycastle</groupId>
-                    <artifactId>bcprov-jdk15on</artifactId>
-                </exclusion>
-                <exclusion>
-                    <groupId>org.bouncycastle</groupId>
-                    <artifactId>bcpkix-jdk15on</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>                
         <dependency>
             <groupId>net.masterthought</groupId>
             <artifactId>cucumber-reporting</artifactId>
-            <version>3.8.0</version>
+            <version>${cucumber.reporting.version}</version>
             <scope>test</scope>
         </dependency>
         <dependency>
@@ -154,15 +131,7 @@
                 <configuration>
                     <skipNexusStagingDeployMojo>true</skipNexusStagingDeployMojo>
                 </configuration>
-            </plugin>
-            <plugin>
-                <groupId>io.gatling</groupId>
-                <artifactId>gatling-maven-plugin</artifactId>
-                <version>${gatling.plugin.version}</version>
-                <configuration>
-                    <simulationsFolder>src/test/java</simulationsFolder>
-                </configuration>
-            </plugin>                         
+            </plugin>                        
         </plugins>
     </build>
     

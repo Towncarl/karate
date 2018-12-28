@@ -26,11 +26,10 @@ package com.intuit.karate.netty;
 import com.intuit.karate.FileUtils;
 import com.intuit.karate.ScriptBindings;
 import com.intuit.karate.StringUtils;
-import com.intuit.karate.cucumber.CucumberRunner;
-import com.intuit.karate.cucumber.KarateStats;
+import com.intuit.karate.Runner;
+import com.intuit.karate.Results;
 import com.intuit.karate.exception.KarateException;
 import com.intuit.karate.ui.App;
-import io.netty.handler.ssl.util.SelfSignedCertificate;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -123,13 +122,14 @@ public class Main implements Callable<Void> {
             }
         };
         cmd.parseWithHandlers(new RunLast(), exceptionHandler, args);
+        System.exit(0);
     }
     
     @Override
     public Void call() throws Exception {
         if (tests != null) {
             if (ui) {
-                App.main(new String[]{tests.get(0), env});
+                App.main(new String[]{new File(tests.get(0)).getAbsolutePath(), env});
             } else {
                 if (env != null) {
                     System.setProperty(ScriptBindings.KARATE_ENV, env);
@@ -139,14 +139,14 @@ public class Main implements Callable<Void> {
                     System.setProperty(ScriptBindings.KARATE_CONFIG_DIR, new File(".").getPath());
                 }
                 List<String> fixed = tests.stream().map(f -> new File(f).getAbsolutePath()).collect(Collectors.toList());
-                KarateStats stats = CucumberRunner.parallel(tags, fixed, threads, output);
+                Results results = Runner.parallel(tags, fixed, threads, output);
                 Collection<File> jsonFiles = org.apache.commons.io.FileUtils.listFiles(new File(output), new String[]{"json"}, true);
                 List<String> jsonPaths = new ArrayList(jsonFiles.size());
                 jsonFiles.forEach(file -> jsonPaths.add(file.getAbsolutePath()));
                 Configuration config = new Configuration(new File(output), new Date() + "");
                 ReportBuilder reportBuilder = new ReportBuilder(jsonPaths, config);
                 reportBuilder.generateReports();
-                if (stats.getFailCount() > 0) {
+                if (results.getFailCount() > 0) {
                     throw new KarateException("there are test failures");
                 }
             }
@@ -174,9 +174,7 @@ public class Main implements Callable<Void> {
             if (!cert.exists() || !key.exists()) {
                 logger.warn("ssl requested, but " + CERT_FILE + " and/or " + KEY_FILE + " not found in working directory, will create");
                 try {
-                    SelfSignedCertificate ssc = new SelfSignedCertificate();
-                    FileUtils.copy(ssc.certificate(), cert);
-                    FileUtils.copy(ssc.privateKey(), key);
+                    NettyUtils.createSelfSignedCertificate(cert, key);
                 } catch (Exception e) {
                     throw new RuntimeException(e);
                 }

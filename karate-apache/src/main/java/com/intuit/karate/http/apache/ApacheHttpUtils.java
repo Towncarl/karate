@@ -37,12 +37,13 @@ import java.util.List;
 import java.util.Map;
 import org.apache.http.HttpEntity;
 import org.apache.http.NameValuePair;
-import org.apache.http.client.entity.UrlEncodedFormEntity;
+import org.apache.http.client.utils.URLEncodedUtils;
 import org.apache.http.entity.ContentType;
 import org.apache.http.entity.InputStreamEntity;
 import org.apache.http.entity.StringEntity;
 import org.apache.http.entity.mime.FormBodyPartBuilder;
 import org.apache.http.entity.mime.MultipartEntityBuilder;
+import org.apache.http.entity.mime.content.ByteArrayBody;
 import org.apache.http.entity.mime.content.ContentBody;
 import org.apache.http.entity.mime.content.InputStreamBody;
 import org.apache.http.entity.mime.content.StringBody;
@@ -96,7 +97,7 @@ public class ApacheHttpUtils {
     
     public static HttpEntity getEntity(InputStream is, String mediaType, Charset charset) {
         try {
-            return new InputStreamEntity(is, getContentType(mediaType, charset));
+            return new InputStreamEntity(is, is.available(), getContentType(mediaType, charset));
         } catch (Exception e) {
             throw new RuntimeException(e);
         }         
@@ -143,7 +144,12 @@ public class ApacheHttpUtils {
             if (cs == null) {
                 cs = charset;
             }            
-            return new UrlEncodedFormEntity(list, cs);
+            String raw = URLEncodedUtils.format(list, cs);
+            int pos = mediaType.indexOf(';');
+            if (pos != -1) { // strip out charset param from content-type
+                mediaType = mediaType.substring(0, pos);
+            }
+            return new StringEntity(raw, ContentType.create(mediaType, cs));
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
@@ -189,9 +195,8 @@ public class ApacheHttpUtils {
                     FormBodyPartBuilder formBuilder = FormBodyPartBuilder.create().setName(name);
                     ContentBody contentBody;
                     String filename = item.getFilename();
-                    if (filename != null) {
-                        InputStream is = sv.getAsStream();
-                        contentBody = new InputStreamBody(is, contentType, filename);
+                    if (filename != null) {                        
+                        contentBody = new ByteArrayBody(sv.getAsByteArray(), contentType, filename);
                     } else if (sv.isStream()) {
                         contentBody = new InputStreamBody(sv.getAsStream(), contentType);
                     } else {

@@ -23,12 +23,14 @@
  */
 package com.intuit.karate;
 
-import com.intuit.karate.cucumber.FeatureWrapper;
+import com.intuit.karate.core.ScenarioContext;
+import com.intuit.karate.core.Feature;
 import com.jayway.jsonpath.DocumentContext;
 import com.jayway.jsonpath.JsonPath;
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import jdk.nashorn.api.scripting.ScriptObjectMirror;
@@ -56,7 +58,7 @@ public class ScriptValue {
         JS_FUNCTION,
         BYTE_ARRAY,
         INPUT_STREAM,
-        FEATURE_WRAPPER
+        FEATURE
     }
 
     private final Object value;
@@ -95,7 +97,7 @@ public class ScriptValue {
                 return "byte[]";
             case INPUT_STREAM:
                 return "stream";
-            case FEATURE_WRAPPER:
+            case FEATURE:
                 return "feature";
             default:
                 return "???";
@@ -109,10 +111,10 @@ public class ScriptValue {
     public boolean isString() {
         return type == Type.STRING;
     }
-    
+
     public boolean isStringOrStream() {
         return isString() || isStream();
-    }    
+    }
 
     public boolean isXml() {
         return type == Type.XML;
@@ -122,12 +124,28 @@ public class ScriptValue {
         return type == Type.INPUT_STREAM;
     }
 
+    public boolean isByteArray() {
+        return type == Type.BYTE_ARRAY;
+    }
+
     public boolean isUnknownType() {
         return type == Type.UNKNOWN;
     }
 
     public boolean isBooleanTrue() {
         return type == Type.PRIMITIVE && "true".equals(value.toString());
+    }
+
+    public boolean isPrimitive() {
+        return type == Type.PRIMITIVE;
+    }
+
+    public Number getAsNumber() {
+        return getValue(Number.class);
+    }
+
+    public boolean isNumber() {
+        return type == Type.PRIMITIVE && Number.class.isAssignableFrom(value.getClass());
     }
 
     public boolean isFunction() {
@@ -174,7 +192,7 @@ public class ScriptValue {
                 return false;
         }
     }
-    
+
     public ScriptValue copy() {
         switch (type) {
             case NULL:
@@ -183,8 +201,8 @@ public class ScriptValue {
             case STRING:
             case BYTE_ARRAY:
             case INPUT_STREAM:
-            case FEATURE_WRAPPER:
-            case JS_FUNCTION:                
+            case FEATURE:
+            case JS_FUNCTION:
                 return this;
             case XML:
                 String xml = XmlUtils.toString(getValue(Node.class));
@@ -192,12 +210,16 @@ public class ScriptValue {
             case JSON:
                 String json = getValue(DocumentContext.class).jsonString();
                 return new ScriptValue(JsonPath.parse(json));
-            case MAP:                                               
-            case JS_OBJECT:
+            case JS_OBJECT: // is a map-like object, happens for json resulting from nashorn
+            case MAP:
+                Map map = getValue(Map.class);
+                return new ScriptValue(new LinkedHashMap(map));
             case JS_ARRAY:
+                ScriptObjectMirror som = getValue(ScriptObjectMirror.class);
+                return new ScriptValue(new ArrayList(som.values()));
             case LIST:
-                DocumentContext mapOrListJson = getAsJsonDocument();
-                return new ScriptValue(JsonPath.parse(mapOrListJson).read("$"));            
+                List list = getValue(List.class);
+                return new ScriptValue(new ArrayList(list));
             default:
                 return this;
         }
@@ -224,8 +246,10 @@ public class ScriptValue {
 
     public boolean isMapLike() {
         switch (type) {
-            case MAP:
             case JSON:
+                DocumentContext doc = (DocumentContext) value;
+                return doc.json() instanceof Map;
+            case MAP:
             case XML:
             case JS_OBJECT:
                 return true;
@@ -250,14 +274,14 @@ public class ScriptValue {
         }
     }
 
-    public ScriptValue invokeFunction(ScriptContext context) {
+    public ScriptValue invokeFunction(ScenarioContext context, Object callArg) {
         ScriptObjectMirror som = getValue(ScriptObjectMirror.class);
-        return Script.evalFunctionCall(som, null, context);
+        return Script.evalFunctionCall(som, callArg, context);
     }
 
-    public Map<String, Object> evalAsMap(ScriptContext context) {
+    public Map<String, Object> evalAsMap(ScenarioContext context) {
         if (isFunction()) {
-            ScriptValue sv = invokeFunction(context);
+            ScriptValue sv = invokeFunction(context, null);
             return sv.isMapLike() ? sv.getAsMap() : null;
         } else {
             return isMapLike() ? getAsMap() : null;
@@ -286,13 +310,49 @@ public class ScriptValue {
                 return JsonUtils.toPrettyJsonString(mapDoc);
             case BYTE_ARRAY:
                 return "(..bytes..)";
-            case INPUT_STREAM:            
+            case INPUT_STREAM:
                 return "(..stream..)";
+            case UNKNOWN:
+                return "(..???..)";
             default:
                 return value.toString();
         }
     }
 
+    public Object toLowerCase() {
+        switch (type) {
+            case JSON:
+                DocumentContext doc = getValue(DocumentContext.class);
+                return JsonUtils.toJsonDoc(doc.jsonString().toLowerCase());
+            case XML:
+                Node node = getValue(Node.class);
+                return XmlUtils.toXmlDoc(XmlUtils.toString(node).toLowerCase());
+            case JS_ARRAY:
+            case LIST:
+                List list = getAsList();
+                DocumentContext listDoc = JsonPath.parse(list);
+                return JsonUtils.toJsonDoc(listDoc.jsonString().toLowerCase()).read("$");
+            case JS_OBJECT:
+            case MAP:
+                DocumentContext mapDoc = JsonPath.parse(getAsMap());
+                return JsonUtils.toJsonDoc(mapDoc.jsonString().toLowerCase()).read("$");
+            case INPUT_STREAM:
+                return FileUtils.toString(getValue(InputStream.class)).toLowerCase();
+            case STRING:
+                return value.toString().toLowerCase();
+            default: // NULL, UNKNOWN, JS_FUNCTION, BYTE_ARRAY, PRIMITIVE
+                return value;
+        }
+    }
+
+    public int getAsInt() {
+        if (isNumber()) {
+            return getAsNumber().intValue();
+        } else {
+            return Integer.valueOf(getAsString());
+        }
+    }
+    
     public String getAsString() {
         switch (type) {
             case NULL:
@@ -314,8 +374,7 @@ public class ScriptValue {
                 return listDoc.jsonString();
             case JS_OBJECT:
             case MAP:
-                Map map = getAsMap();
-                DocumentContext mapDoc = JsonPath.parse(map);
+                DocumentContext mapDoc = JsonPath.parse(getAsMap());
                 return mapDoc.jsonString();
             case JS_FUNCTION:
                 return value.toString().replace("\n", " ");
@@ -325,6 +384,19 @@ public class ScriptValue {
                 return FileUtils.toString(getValue(InputStream.class));
             default:
                 return value.toString();
+        }
+    }
+
+    public byte[] getAsByteArray() {
+        switch (type) {
+            case NULL:
+                return null;
+            case INPUT_STREAM:
+                return FileUtils.toBytes(getValue(InputStream.class));
+            case BYTE_ARRAY:
+                return getValue(byte[].class);
+            default:
+                return getAsString().getBytes();
         }
     }
 
@@ -399,8 +471,8 @@ public class ScriptValue {
             type = Type.INPUT_STREAM;
         } else if (Script.isPrimitive(value.getClass())) {
             type = Type.PRIMITIVE;
-        } else if (value instanceof FeatureWrapper) {
-            type = Type.FEATURE_WRAPPER;
+        } else if (value instanceof Feature) {
+            type = Type.FEATURE;
         } else {
             type = Type.UNKNOWN;
         }

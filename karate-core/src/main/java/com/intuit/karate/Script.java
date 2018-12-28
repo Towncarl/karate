@@ -23,12 +23,24 @@
  */
 package com.intuit.karate;
 
+import com.intuit.karate.core.MatchType;
+import com.intuit.karate.core.FeatureContext;
+import com.intuit.karate.core.ScenarioContext;
 import com.intuit.karate.exception.KarateException;
 import static com.intuit.karate.ScriptValue.Type.*;
-import com.intuit.karate.cucumber.CucumberUtils;
-import com.intuit.karate.cucumber.FeatureWrapper;
+import com.intuit.karate.core.Engine;
+import com.intuit.karate.core.Feature;
+import com.intuit.karate.core.FeatureResult;
 import com.intuit.karate.validator.ArrayValidator;
+import com.intuit.karate.validator.BooleanValidator;
+import com.intuit.karate.validator.IgnoreValidator;
+import com.intuit.karate.validator.NotNullValidator;
+import com.intuit.karate.validator.NullValidator;
+import com.intuit.karate.validator.NumberValidator;
+import com.intuit.karate.validator.ObjectValidator;
 import com.intuit.karate.validator.RegexValidator;
+import com.intuit.karate.validator.StringValidator;
+import com.intuit.karate.validator.UuidValidator;
 import com.intuit.karate.validator.ValidationResult;
 import com.intuit.karate.validator.Validator;
 import com.jayway.jsonpath.DocumentContext;
@@ -37,14 +49,17 @@ import com.jayway.jsonpath.PathNotFoundException;
 import java.math.BigDecimal;
 import java.text.DecimalFormat;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -61,14 +76,31 @@ import org.w3c.dom.NodeList;
  */
 public class Script {
 
+    private Script() {
+        // only static methods
+    }
+
     public static final String VAR_SELF = "_";
     public static final String VAR_ROOT = "$";
     public static final String VAR_PARENT = "_$";
     public static final String VAR_LOOP = "__loop";
     public static final String VAR_ARG = "__arg";
+    public static final String VAR_HEADER = "header";
 
-    private Script() {
-        // only static methods
+    public static final Map<String, Validator> VALIDATORS;
+
+    static {
+        VALIDATORS = new HashMap(10);
+        VALIDATORS.put("ignore", IgnoreValidator.INSTANCE);
+        VALIDATORS.put("null", NullValidator.INSTANCE);
+        VALIDATORS.put("notnull", NotNullValidator.INSTANCE);
+        VALIDATORS.put("present", IgnoreValidator.INSTANCE); // re-use ignore, json key logic is in Script.java
+        VALIDATORS.put("uuid", UuidValidator.INSTANCE);
+        VALIDATORS.put("string", StringValidator.INSTANCE);
+        VALIDATORS.put("number", NumberValidator.INSTANCE);
+        VALIDATORS.put("boolean", BooleanValidator.INSTANCE);
+        VALIDATORS.put("array", ArrayValidator.INSTANCE);
+        VALIDATORS.put("object", ObjectValidator.INSTANCE);
     }
 
     public static final boolean isCallSyntax(String text) {
@@ -163,30 +195,47 @@ public class Script {
         return StringUtils.pair(name, path);
     }
 
-    public static ScriptValue evalKarateExpressionForMatch(String text, ScriptContext context) {
-        return evalKarateExpression(text, context, false, true);
+    public static ScriptValue evalKarateExpressionForMatch(String text, ScenarioContext context) {
+        return evalKarateExpression(text, context, true);
     }
 
-    public static ScriptValue evalKarateExpression(String text, ScriptContext context) {
-        return evalKarateExpression(text, context, false, false);
+    public static ScriptValue evalKarateExpression(String text, ScenarioContext context) {
+        return evalKarateExpression(text, context, false);
     }
 
-    private static ScriptValue callWithCache(String text, String arg, ScriptContext context, boolean reuseParentConfig) {
-        CallResult result = context.env.callCache.get(text);
+    private static ScriptValue callWithCache(String text, String arg, ScenarioContext context, boolean reuseParentConfig) {
+        final FeatureContext featureContext = context.featureContext;
+        CallResult result = featureContext.callCache.get(text);
         if (result != null) {
-            context.logger.debug("callonce cache hit for: {}", text);
+            context.logger.trace("callonce cache hit for: {}", text);
             if (reuseParentConfig) { // re-apply config that may have been lost when we switched scenarios within a feature
-                context.configure(result.config);
+                context.configure(new Config(result.config)); // clone for safety
             }
-            return result.value;
+            return result.value.copy(); // clone for safety
         }
-        ScriptValue resultValue = call(text, arg, context, reuseParentConfig);
-        context.env.callCache.put(text, resultValue, context.config);
-        context.logger.debug("cached callonce: {}", text);
-        return resultValue;
+        long startTime = System.currentTimeMillis();
+        context.logger.trace("callonce waiting for lock: {}", text);
+        synchronized (featureContext) {
+            result = featureContext.callCache.get(text); // retry
+            if (result != null) {
+                long endTime = System.currentTimeMillis() - startTime;
+                context.logger.warn("this thread waited {} milliseconds for callonce lock: {}", endTime, text);
+                if (reuseParentConfig) { // re-apply config that may have been lost when we switched scenarios within a feature
+                    context.configure(new Config(result.config)); // clone for safety
+                }
+                return result.value.copy(); // clone for safety
+            }
+            // this thread is the 'winner'
+            context.logger.info(">> lock acquired, begin callonce: {}", text);
+            ScriptValue resultValue = call(text, arg, context, reuseParentConfig);
+            result = new CallResult(resultValue.copy(), new Config(context.getConfig())); // snapshot for safety
+            featureContext.callCache.put(text, result);
+            context.logger.info("<< lock released, cached callonce: {}", text);
+            return resultValue;
+        }
     }
 
-    public static ScriptValue getIfVariableReference(String text, ScriptContext context) {
+    public static ScriptValue getIfVariableReference(String text, ScenarioContext context) {
         if (isVariable(text)) {
             // don't re-evaluate if this is clearly a direct reference to a variable
             // this avoids un-necessary conversion of xml into a map in some cases 
@@ -199,7 +248,7 @@ public class Script {
         return null;
     }
 
-    private static ScriptValue evalKarateExpression(String text, ScriptContext context, boolean reuseParentConfig, boolean forMatch) {
+    private static ScriptValue evalKarateExpression(String text, ScenarioContext context, boolean forMatch) {
         text = StringUtils.trimToNull(text);
         if (text == null) {
             return ScriptValue.NULL;
@@ -224,9 +273,9 @@ public class Script {
                 arg = null;
             }
             if (callOnce) {
-                return callWithCache(text, arg, context, reuseParentConfig);
+                return callWithCache(text, arg, context, false);
             } else {
-                return call(text, arg, context, reuseParentConfig);
+                return call(text, arg, context, false);
             }
         } else if (isJsonPath(text)) {
             return evalJsonPathOnVarByName(ScriptValueMap.VAR_RESPONSE, text, context);
@@ -247,7 +296,10 @@ public class Script {
             }
             String left;
             String right;
-            if (isVariableAndSpaceAndPath(text)) {
+            if (isJsonPath(text)) { // edge case get[0] $..foo
+                left = ScriptValueMap.VAR_RESPONSE;
+                right = text;
+            } else if (isVariableAndSpaceAndPath(text)) {
                 int pos = text.indexOf(' ');
                 right = text.substring(pos + 1);
                 left = text.substring(0, pos);
@@ -286,7 +338,7 @@ public class Script {
         }
     }
 
-    private static ScriptValue getValuebyName(String name, ScriptContext context) {
+    private static ScriptValue getValuebyName(String name, ScenarioContext context) {
         ScriptValue value = context.vars.get(name);
         if (value == null) {
             throw new RuntimeException("no variable found with name: " + name);
@@ -295,7 +347,7 @@ public class Script {
     }
 
     // this is called only from the routine that evaluates karate expressions
-    public static ScriptValue evalXmlPathOnVarByName(String name, String path, ScriptContext context) {
+    public static ScriptValue evalXmlPathOnVarByName(String name, String path, ScenarioContext context) {
         ScriptValue value = getValuebyName(name, context);
         Node node;
         switch (value.getType()) {
@@ -351,7 +403,7 @@ public class Script {
         }
     }
 
-    public static ScriptValue evalJsonPathOnVarByName(String name, String exp, ScriptContext context) {
+    public static ScriptValue evalJsonPathOnVarByName(String name, String exp, ScenarioContext context) {
         ScriptValue value = getValuebyName(name, context);
         if (value.isJsonLike()) {
             DocumentContext jsonDoc = value.getAsJsonDocument();
@@ -367,11 +419,11 @@ public class Script {
         }
     }
 
-    public static ScriptValue evalJsExpression(String exp, ScriptContext context) {
+    public static ScriptValue evalJsExpression(String exp, ScenarioContext context) {
         return ScriptBindings.evalInNashorn(exp, context, null);
     }
 
-    public static ScriptValue evalJsExpression(String exp, ScriptContext context, ScriptValue selfValue, Object root, Object parent) {
+    public static ScriptValue evalJsExpression(String exp, ScenarioContext context, ScriptValue selfValue, Object root, Object parent) {
         return ScriptBindings.evalInNashorn(exp, context, new ScriptEvalContext(selfValue, root, parent));
     }
 
@@ -383,12 +435,12 @@ public class Script {
         return VARIABLE_PATTERN.matcher(name).matches();
     }
 
-    public static void evalJsonEmbeddedExpressions(DocumentContext doc, ScriptContext context, boolean forMatch) {
+    public static void evalJsonEmbeddedExpressions(DocumentContext doc, ScenarioContext context, boolean forMatch) {
         Object o = doc.read("$");
         evalJsonEmbeddedExpressions("$", o, context, doc, forMatch);
     }
 
-    private static void evalJsonEmbeddedExpressions(String path, Object o, ScriptContext context, DocumentContext root, boolean forMatch) {
+    private static void evalJsonEmbeddedExpressions(String path, Object o, ScenarioContext context, DocumentContext root, boolean forMatch) {
         if (o == null) {
             return;
         }
@@ -434,7 +486,7 @@ public class Script {
         }
     }
 
-    public static void evalXmlEmbeddedExpressions(Node node, ScriptContext context, boolean forMatch) {
+    public static void evalXmlEmbeddedExpressions(Node node, ScenarioContext context, boolean forMatch) {
         if (node.getNodeType() == Node.DOCUMENT_NODE) {
             node = node.getFirstChild();
         }
@@ -515,40 +567,12 @@ public class Script {
         }
     }
 
-    public static ScriptValue copy(String name, String exp, ScriptContext context, boolean validateName) {
+    public static ScriptValue copy(String name, String exp, ScenarioContext context, boolean validateName) {
         return assign(AssignType.COPY, name, exp, context, validateName);
     }
 
-    public static ScriptValue assign(String name, String exp, ScriptContext context) {
+    public static ScriptValue assign(String name, String exp, ScenarioContext context) {
         return assign(AssignType.AUTO, name, exp, context, true);
-    }
-
-    public static ScriptValue assign(String name, String exp, ScriptContext context, boolean validateName) {
-        return assign(AssignType.AUTO, name, exp, context, validateName);
-    }
-
-    public static ScriptValue assignText(String name, String exp, ScriptContext context, boolean validateName) {
-        return assign(AssignType.TEXT, name, exp, context, validateName);
-    }
-
-    public static ScriptValue assignYaml(String name, String exp, ScriptContext context, boolean validateName) {
-        return assign(AssignType.YAML, name, exp, context, validateName);
-    }
-
-    public static ScriptValue assignString(String name, String exp, ScriptContext context, boolean validateName) {
-        return assign(AssignType.STRING, name, exp, context, validateName);
-    }
-
-    public static ScriptValue assignJson(String name, String exp, ScriptContext context, boolean validateName) {
-        return assign(AssignType.JSON, name, exp, context, validateName);
-    }
-
-    public static ScriptValue assignXml(String name, String exp, ScriptContext context, boolean validateName) {
-        return assign(AssignType.XML, name, exp, context, validateName);
-    }
-
-    public static ScriptValue assignXmlString(String name, String exp, ScriptContext context, boolean validateName) {
-        return assign(AssignType.XML_STRING, name, exp, context, validateName);
     }
 
     private static void validateVariableName(String name) {
@@ -563,7 +587,7 @@ public class Script {
         }
     }
 
-    private static ScriptValue assign(AssignType assignType, String name, String exp, ScriptContext context, boolean validateName) {
+    public static ScriptValue assign(AssignType assignType, String name, String exp, ScenarioContext context, boolean validateName) {
         name = StringUtils.trimToEmpty(name);
         if (validateName) {
             validateVariableName(name);
@@ -594,6 +618,10 @@ public class Script {
                 Node xmlStringDoc = toXmlDoc(evalKarateExpression(exp, context), context);
                 sv = new ScriptValue(XmlUtils.toString(xmlStringDoc));
                 break;
+            case BYTE_ARRAY:
+                ScriptValue tempBytes = evalKarateExpression(exp, context);
+                sv = new ScriptValue(tempBytes.getAsByteArray());
+                break;
             case COPY:
                 sv = evalKarateExpression(exp, context).copy();
                 break;
@@ -604,7 +632,7 @@ public class Script {
         return sv;
     }
 
-    public static DocumentContext toJsonDoc(ScriptValue sv, ScriptContext context) {
+    public static DocumentContext toJsonDoc(ScriptValue sv, ScenarioContext context) {
         if (sv.getType() == JSON) { // optimize
             return (DocumentContext) sv.getValue();
         } else if (sv.isListLike()) {
@@ -624,7 +652,7 @@ public class Script {
         }
     }
 
-    private static Node toXmlDoc(ScriptValue sv, ScriptContext context) {
+    private static Node toXmlDoc(ScriptValue sv, ScenarioContext context) {
         if (sv.isXml()) {
             return sv.getValue(Node.class);
         } else if (sv.isMapLike()) {
@@ -642,8 +670,8 @@ public class Script {
         }
     }
 
-    public static AssertionResult matchNamed(MatchType matchType, String name, String path, String expected, ScriptContext context) {
-        name = StringUtils.trimToEmpty(name);
+    public static AssertionResult matchNamed(MatchType matchType, String expression, String path, String expected, ScenarioContext context) {
+        String name = StringUtils.trimToEmpty(expression);
         if (isJsonPath(name) || isXmlPath(name)) { // short-cut for operating on response
             path = name;
             name = ScriptValueMap.VAR_RESPONSE;
@@ -657,18 +685,22 @@ public class Script {
             name = pair.left;
             path = pair.right;
         }
-        if ("header".equals(name)) { // convenience shortcut for asserting against response header
-            return matchNamed(matchType, ScriptValueMap.VAR_RESPONSE_HEADERS, "$['" + path + "'][0]", expected, context);
-        } else {
-            ScriptValue actual = context.vars.get(name);
-            if (actual == null) {
-                throw new RuntimeException("variable not initialized: " + name);
+        ScriptValue actual = context.vars.get(name);
+        if (actual == null) {
+            if (VAR_HEADER.equals(name)) { // convenience shortcut for asserting against response header
+                return matchNamed(matchType, ScriptValueMap.VAR_RESPONSE_HEADERS, "$['" + path + "'][0]", expected, context);
             }
-            return matchScriptValue(matchType, actual, path, expected, context);
+            // evaluate ANY karate expression even on LHS
+            // will throw exception if variable does not exist
+            actual = evalKarateExpression(expression, context);
+            if (actual.isJsonLike()) { // we have eval-ed the LHS, so match RHS to the entire LHS doc
+                path = VAR_ROOT;
+            }
         }
+        return matchScriptValue(matchType, actual, path, expected, context);
     }
 
-    public static AssertionResult matchScriptValue(MatchType matchType, ScriptValue actual, String path, String expected, ScriptContext context) {
+    public static AssertionResult matchScriptValue(MatchType matchType, ScriptValue actual, String path, String expected, ScenarioContext context) {
         switch (actual.getType()) {
             case STRING:
             case INPUT_STREAM:
@@ -692,7 +724,7 @@ public class Script {
         }
     }
 
-    public static AssertionResult matchString(MatchType matchType, ScriptValue actual, String expected, String path, ScriptContext context) {
+    public static AssertionResult matchString(MatchType matchType, ScriptValue actual, String expected, String path, ScenarioContext context) {
         ScriptValue expectedValue = evalKarateExpression(expected, context);
         expected = expectedValue.getAsString();
         return matchStringOrPattern('*', path, matchType, null, null, actual, expected, context);
@@ -711,7 +743,7 @@ public class Script {
     }
 
     public static AssertionResult matchStringOrPattern(char delimiter, String path, MatchType stringMatchType,
-            Object actRoot, Object actParent, ScriptValue actValue, String expected, ScriptContext context) {
+            Object actRoot, Object actParent, ScriptValue actValue, String expected, ScenarioContext context) {
         if (expected == null) {
             if (!actValue.isNull()) {
                 if (stringMatchType == MatchType.NOT_EQUALS) {
@@ -866,7 +898,7 @@ public class Script {
                 }
                 validatorName = StringUtils.trimToNull(validatorName);
                 if (validatorName != null) {
-                    Validator v = context.validators.get(validatorName);
+                    Validator v = VALIDATORS.get(validatorName);
                     if (v == null) {
                         boolean pass = expected.equals(actValue.getAsString());
                         if (!pass) {
@@ -942,7 +974,7 @@ public class Script {
         return AssertionResult.PASS;
     }
 
-    public static AssertionResult matchXml(MatchType matchType, ScriptValue actual, String path, String expression, ScriptContext context) {
+    public static AssertionResult matchXml(MatchType matchType, ScriptValue actual, String path, String expression, ScenarioContext context) {
         Node node = actual.getValue(Node.class);
         actual = evalXmlPathOnXmlNode(node, path);
         ScriptValue expected = evalKarateExpression(expression, context);
@@ -1007,7 +1039,7 @@ public class Script {
         }
     }
 
-    public static AssertionResult matchJsonOrObject(MatchType matchType, ScriptValue actual, String path, String expression, ScriptContext context) {
+    public static AssertionResult matchJsonOrObject(MatchType matchType, ScriptValue actual, String path, String expression, ScenarioContext context) {
         DocumentContext actualDoc;
         switch (actual.getType()) {
             case JSON:
@@ -1052,6 +1084,21 @@ public class Script {
                     return matchFailed(matchType, path, null, expectedNull.getValue(), "actual value is null but expected is " + expectedNull);
                 } else {
                     return matchStringOrPattern('.', path, matchType, null, null, actual, expectedNull.getAsString(), context);
+                }
+            case BYTE_ARRAY:
+                ScriptValue expectedBytesValue = evalKarateExpression(expression, context);
+                byte[] expectedBytes = expectedBytesValue.getAsByteArray();
+                byte[] actualBytes = actual.getAsByteArray();
+                if (Arrays.equals(expectedBytes, actualBytes)) {
+                    if (matchType == MatchType.NOT_EQUALS) {
+                        return matchFailed(matchType, path, actualBytes, expectedBytes, "actual and expected byte-arrays are not equal");
+                    }
+                    return AssertionResult.PASS;
+                } else {
+                    if (matchType == MatchType.NOT_EQUALS) {
+                        return AssertionResult.PASS;
+                    }
+                    return matchFailed(matchType, path, actualBytes, expectedBytes, "actual and expected byte-arrays are not equal");
                 }
             default:
                 throw new RuntimeException("not json, cannot do json path for value: " + actual + ", path: " + path);
@@ -1174,8 +1221,10 @@ public class Script {
             Object actObject, Object expObject, String reason) {
         if (path.startsWith("/")) {
             String leafName = getLeafNameFromXmlPath(path);
-            actObject = toXmlString(leafName, actObject);
-            expObject = toXmlString(leafName, expObject);
+            if (!"@".equals(leafName)) {
+                actObject = toXmlString(leafName, actObject);
+                expObject = toXmlString(leafName, expObject);
+            }
             path = path.replace("/@/", "/@");
         }
         String message = String.format("path: %s, actual: %s, %sexpected: %s, reason: %s",
@@ -1184,7 +1233,7 @@ public class Script {
     }
 
     public static AssertionResult matchNestedObject(char delimiter, String path, MatchType matchType,
-            Object actRoot, Object actParent, Object actObject, Object expObject, ScriptContext context) {
+            Object actRoot, Object actParent, Object actObject, Object expObject, ScenarioContext context) {
         if (expObject == null) {
             if (actObject != null) {
                 if (matchType == MatchType.NOT_EQUALS) {
@@ -1230,6 +1279,7 @@ public class Script {
                     return AssertionResult.PASS; // exit early
                 }
             }
+            int matchedCount = 0;
             for (Map.Entry<String, Object> expEntry : expMap.entrySet()) {
                 String key = expEntry.getKey();
                 Object childExp = expEntry.getValue();
@@ -1238,24 +1288,20 @@ public class Script {
                     boolean equal = false;
                     if (childExp instanceof String) {
                         String childMacro = (String) childExp;
-                        if (isOptionalMacro(childMacro)
-                                || childMacro.equals("#ignore")
-                                || childMacro.equals("#notpresent")) { // logical match
+                        if (isOptionalMacro(childMacro) || childMacro.equals("#notpresent")) { // logical match
                             if (matchType == MatchType.NOT_CONTAINS) {
                                 return matchFailed(matchType, childPath, "(not present)", childExp, "actual value contains expected");
                             }
                             equal = true;
+                            matchedCount++;
                         }
                     }
                     if (!equal) {
                         if (matchType == MatchType.NOT_EQUALS) {
                             return AssertionResult.PASS; // exit early
                         }
-                        if (matchType == MatchType.CONTAINS_ANY) {
-                            continue; // keep trying
-                        }
-                        if (matchType != MatchType.NOT_CONTAINS) {
-                            return matchFailed(matchType, childPath, "(not present)", childExp, "actual value does not contain expected");
+                        if (matchType == MatchType.NOT_CONTAINS) {
+                            return AssertionResult.PASS; // exit early
                         }
                     } else { // we found one
                         if (matchType == MatchType.CONTAINS_ANY) {
@@ -1267,9 +1313,7 @@ public class Script {
                 Object childAct = actMap.get(key);
                 AssertionResult ar = matchNestedObject(delimiter, childPath, MatchType.EQUALS, actRoot, actMap, childAct, childExp, context);
                 if (ar.pass) { // values for this key match
-                    if (matchType == MatchType.NOT_CONTAINS) {
-                        return matchFailed(matchType, childPath, childAct, childExp, "actual value contains expected");
-                    }
+                    matchedCount++;
                     if (matchType == MatchType.CONTAINS_ANY) {
                         return AssertionResult.PASS; // exit early
                     }
@@ -1277,11 +1321,8 @@ public class Script {
                     if (matchType == MatchType.NOT_EQUALS) {
                         return AssertionResult.PASS; // exit early
                     }
-                    if (matchType == MatchType.CONTAINS_ANY) {
-                        continue; // keep trying
-                    }
-                    if (matchType != MatchType.NOT_CONTAINS) {
-                        return ar; // fail early
+                    if (matchType == MatchType.NOT_CONTAINS) {
+                        return AssertionResult.PASS; // exit early
                     }
                 }
             }
@@ -1289,11 +1330,28 @@ public class Script {
                 // if any were found, we would have exited early
                 return matchFailed(matchType, path, actObject, expObject, "no key-values matched");
             }
-            // if we reached here, all map entries matched
-            if (matchType == MatchType.NOT_EQUALS) {
-                return matchFailed(matchType, path, actObject, expObject, "all key-values matched");
+            if (matchedCount < expMap.size()) {
+                // all map entries did not match, (matchedCount can be greater because of #ignore)
+                if (matchType == MatchType.NOT_CONTAINS) {
+                    return AssertionResult.PASS;
+                }
+                if (matchType == MatchType.NOT_EQUALS) {
+                    return AssertionResult.PASS;
+                }
+                return matchFailed(matchType, path, actObject, expObject, "all key-values did not match");
+            } else {
+                // if we reached here, all map-entries matched
+                if (matchType == MatchType.NOT_CONTAINS) {
+                    if (expMap.isEmpty()) { // special case, does not make sense to "!contains {}"
+                        return AssertionResult.PASS;
+                    }
+                    return matchFailed(matchType, path, actObject, expObject, "actual contains all expected key-values");
+                }
+                if (matchType == MatchType.NOT_EQUALS) {
+                    return matchFailed(matchType, path, actObject, expObject, "all key-values matched");
+                }
+                return AssertionResult.PASS;
             }
-            return AssertionResult.PASS;
         } else if (expObject instanceof List) {
             if (!(actObject instanceof List)) {
                 if (matchType == MatchType.NOT_EQUALS) {
@@ -1467,19 +1525,19 @@ public class Script {
         return AssertionResult.PASS;
     }
 
-    public static void removeValueByPath(String name, String path, ScriptContext context) {
+    public static void removeValueByPath(String name, String path, ScenarioContext context) {
         setValueByPath(name, path, ScriptValue.NULL, true, context, false);
     }
 
-    public static void setValueByPath(String name, String path, ScriptValue value, ScriptContext context) {
+    public static void setValueByPath(String name, String path, ScriptValue value, ScenarioContext context) {
         setValueByPath(name, path, value, false, context, false);
     }
 
-    public static void setValueByPath(String name, String path, String exp, ScriptContext context) {
+    public static void setValueByPath(String name, String path, String exp, ScenarioContext context) {
         setValueByPath(name, path, exp, false, context, false);
     }
 
-    public static void setValueByPath(String name, String path, String exp, boolean delete, ScriptContext context, boolean viaTable) {
+    public static void setValueByPath(String name, String path, String exp, boolean delete, ScenarioContext context, boolean viaTable) {
         ScriptValue value = delete ? ScriptValue.NULL : evalKarateExpression(exp, context);
         if (viaTable && value.isNull() && !isWithinParentheses(exp)) {
             // by default, skip any expression that evaluates to null unless the user expressed
@@ -1489,7 +1547,7 @@ public class Script {
         setValueByPath(name, path, value, delete, context, viaTable);
     }
 
-    public static void setValueByPath(String name, String path, ScriptValue value, boolean delete, ScriptContext context, boolean viaTable) {
+    public static void setValueByPath(String name, String path, ScriptValue value, boolean delete, ScenarioContext context, boolean viaTable) {
         name = StringUtils.trimToEmpty(name);
         path = StringUtils.trimToNull(path);
         if (path == null) {
@@ -1548,7 +1606,7 @@ public class Script {
         }
     }
 
-    public static ScriptValue call(String name, String argString, ScriptContext context, boolean reuseParentConfig) {
+    public static ScriptValue call(String name, String argString, ScenarioContext context, boolean reuseParentConfig) {
         ScriptValue argValue = evalKarateExpression(argString, context);
         ScriptValue sv = evalKarateExpression(name, context);
         switch (sv.getType()) {
@@ -1571,7 +1629,7 @@ public class Script {
                 }
                 ScriptObjectMirror som = sv.getValue(ScriptObjectMirror.class);
                 return evalFunctionCall(som, argValue.getValue(), context);
-            case FEATURE_WRAPPER:
+            case FEATURE:
                 Object callArg = null;
                 switch (argValue.getType()) {
                     case LIST:
@@ -1595,7 +1653,7 @@ public class Script {
                     default:
                         throw new RuntimeException("only json, list/array or map allowed as feature call argument");
                 }
-                FeatureWrapper feature = sv.getValue(FeatureWrapper.class);
+                Feature feature = sv.getValue(Feature.class);
                 return evalFeatureCall(feature, callArg, context, reuseParentConfig);
             default:
                 context.logger.warn("not a js function or feature file: {} - {}", name, sv);
@@ -1603,7 +1661,7 @@ public class Script {
         }
     }
 
-    public static ScriptValue evalFunctionCall(ScriptObjectMirror som, Object callArg, ScriptContext context) {
+    public static ScriptValue evalFunctionCall(ScriptObjectMirror som, Object callArg, ScenarioContext context) {
         // injects the 'karate' variable into the js function body
         // also ensure that things like 'karate.get' operate on the latest variable state
         som.setMember(ScriptBindings.KARATE, context.bindings.bridge);
@@ -1623,7 +1681,7 @@ public class Script {
         }
     }
 
-    public static ScriptValue evalFeatureCall(FeatureWrapper feature, Object callArg, ScriptContext context, boolean reuseParentConfig) {
+    public static ScriptValue evalFeatureCall(Feature feature, Object callArg, ScenarioContext context, boolean reuseParentConfig) {
         if (callArg instanceof Collection) { // JSON array
             Collection items = (Collection) callArg;
             Object[] array = items.toArray();
@@ -1634,11 +1692,12 @@ public class Script {
                 if (rowArg instanceof Map) {
                     Map rowArgMap = (Map) rowArg;
                     try {
-                        ScriptValue rowResult = evalFeatureCall(feature, context, rowArgMap, i, reuseParentConfig);
+                        CallContext callContext = CallContext.forCall(feature, context, rowArgMap, i, reuseParentConfig);
+                        ScriptValue rowResult = evalFeatureCall(callContext);
                         result.add(rowResult.getValue());
                     } catch (KarateException ke) {
                         String message = "feature call (loop) failed at index: " + i + "\ncaller: "
-                                + feature.getEnv().featureName + "\narg: " + rowArg + "\n" + ke.getMessage();
+                                + feature.getRelativePath() + "\narg: " + rowArg + "\n" + ke.getMessage();
                         errors.add(message);
                         // log but don't stop (yet)
                         context.logger.error("{}", message);
@@ -1648,8 +1707,9 @@ public class Script {
                 }
             }
             if (!errors.isEmpty()) {
-                String message = "feature call (loop) failed: " + feature.getPath()
-                        + "\ncaller: " + feature.getEnv().featureName + "\nitems: " + items + "\nerrors:";
+                String caller = context.featureContext.feature.getRelativePath();
+                String message = "feature call (loop) failed: " + feature.getRelativePath()
+                        + "\ncaller: " + caller + "\nitems: " + items + "\nerrors:";
                 for (String s : errors) {
                     message = message + "\n-------\n" + s;
                 }
@@ -1659,9 +1719,10 @@ public class Script {
         } else if (callArg == null || callArg instanceof Map) {
             Map<String, Object> argAsMap = (Map) callArg;
             try {
-                return evalFeatureCall(feature, context, argAsMap, -1, reuseParentConfig);
+                CallContext callContext = CallContext.forCall(feature, context, argAsMap, -1, reuseParentConfig);
+                return evalFeatureCall(callContext);
             } catch (KarateException ke) {
-                String message = "feature call failed: " + feature.getPath()
+                String message = "feature call failed: " + feature.getRelativePath()
                         + "\narg: " + callArg + "\n" + ke.getMessage();
                 context.logger.error("{}", message);
                 throw new KarateException(message, ke);
@@ -1671,40 +1732,44 @@ public class Script {
         }
     }
 
-    private static ScriptValue evalFeatureCall(FeatureWrapper feature, ScriptContext context,
-            Map<String, Object> callArg, int loopIndex, boolean reuseParentConfig) {
-        CallContext callContext = new CallContext(context, context.callDepth + 1, callArg, loopIndex,
-                reuseParentConfig, false, null, context.asyncSystem, null, context.stepInterceptor);
-        if (context.env.reporter != null) {
-            context.env.reporter.callBegin(feature, callContext);
+    private static ScriptValue evalFeatureCall(CallContext callContext) {
+        // the call is always going to execute synchronously ! TODO improve  
+        FeatureResult result;
+        Function<CallContext, FeatureResult> callable = callContext.context.getCallable();
+        if (callable != null) { // only for ui called feature support
+            try {
+                result = callable.apply(callContext);
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        } else {
+            result = Engine.executeFeatureSync(null, callContext.feature, null, callContext);            
+        } 
+        // hack to pass call result back to caller step
+        callContext.context.addCallResult(result);
+        result.setCallArg(callContext.callArg);
+        result.setLoopIndex(callContext.loopIndex);
+        if (result.isFailed()) {
+            throw result.getErrorsCombined();
         }
-        ScriptValueMap svm = CucumberUtils.callSync(feature, callContext);
-        return new ScriptValue(svm.toPrimitiveMap());
+        return new ScriptValue(result.getResultAsPrimitiveMap()); 
     }
 
-    public static void callAndUpdateConfigAndAlsoVarsIfMapReturned(boolean callOnce, String name, String arg, ScriptContext context) {
+    public static void callAndUpdateConfigAndAlsoVarsIfMapReturned(boolean callOnce, String name, String arg, ScenarioContext context) {
         ScriptValue sv;
         if (callOnce) {
             sv = callWithCache(name, arg, context, true);
         } else {
             sv = call(name, arg, context, true);
         }
-        Map<String, Object> result;
-        switch (sv.getType()) {
-            case JS_OBJECT:
-            case MAP:
-                result = sv.getValue(Map.class);
-                break;
-            default:
-                context.logger.trace("no vars returned from function call result: {}", sv);
-                return;
-        }
-        for (Map.Entry<String, Object> entry : result.entrySet()) {
-            context.vars.put(entry.getKey(), entry.getValue());
+        if (sv.isMapLike()) {
+            sv.getAsMap().forEach((k, v) -> context.vars.put(k, v));
+        } else {
+            context.logger.trace("no vars returned from function call result: {}", sv);
         }
     }
 
-    public static AssertionResult assertBoolean(String expression, ScriptContext context) {
+    public static AssertionResult assertBoolean(String expression, ScenarioContext context) {
         ScriptValue result = evalJsExpression(expression, context);
         if (!result.isBooleanTrue()) {
             return AssertionResult.fail("assert evaluated to false: " + expression);
@@ -1712,7 +1777,7 @@ public class Script {
         return AssertionResult.PASS;
     }
 
-    public static String replacePlaceholderText(String text, String token, String replaceWith, ScriptContext context) {
+    public static String replacePlaceholderText(String text, String token, String replaceWith, ScenarioContext context) {
         if (text == null) {
             return null;
         }
@@ -1725,6 +1790,9 @@ public class Script {
             replaceWith = sv.getAsString();
         } catch (Exception e) {
             throw new RuntimeException("expression error (replace string values need to be within quotes): " + e.getMessage());
+        }
+        if (replaceWith == null) { // ignore if eval result is null
+            return text;
         }
         token = StringUtils.trimToNull(token);
         if (token == null) {
@@ -1739,7 +1807,7 @@ public class Script {
 
     private static final String TOKEN = "token";
 
-    public static String replacePlaceholders(String text, List<Map<String, String>> list, ScriptContext context) {
+    public static String replacePlaceholders(String text, List<Map<String, String>> list, ScenarioContext context) {
         if (text == null) {
             return null;
         }
@@ -1764,24 +1832,23 @@ public class Script {
         return text;
     }
 
-    public static List<Map<String, Object>> evalTable(List<Map<String, Object>> list, ScriptContext context) {
+    public static List<Map<String, Object>> evalTable(List<Map<String, String>> list, ScenarioContext context) {
         List<Map<String, Object>> result = new ArrayList<>(list.size());
-        for (Map<String, Object> map : list) {
+        for (Map<String, String> map : list) {
             Map<String, Object> row = new LinkedHashMap<>(map);
             List<String> toRemove = new ArrayList(map.size());
             for (Map.Entry<String, Object> entry : row.entrySet()) {
-                Object o = entry.getValue();
-                if (o instanceof String) { // else will be number or boolean primitives
-                    String exp = (String) o;
-                    ScriptValue sv = evalKarateExpression(exp, context);
-                    if (sv.isNull() && !isWithinParentheses(exp)) { // by default empty / null will be stripped, force null like this: '(null)'
-                        toRemove.add(entry.getKey());
+                String exp = (String) entry.getValue();
+                ScriptValue sv = evalKarateExpression(exp, context);
+                if (sv.isNull() && !isWithinParentheses(exp)) { // by default empty / null will be stripped, force null like this: '(null)'
+                    toRemove.add(entry.getKey());
+                } else {
+                    if (sv.isJsonLike()) {
+                        entry.setValue(sv.getAsJsonDocument().read("$")); // will be Map or List
+                    } else if (sv.isString()) {
+                        entry.setValue(sv.getAsString());
                     } else {
-                        if (sv.isJsonLike()) {
-                            entry.setValue(sv.getAsJsonDocument().read("$")); // will be Map or List
-                        } else {
-                            entry.setValue(sv.getValue());
-                        }
+                        entry.setValue(sv.getValue());
                     }
                 }
             }
@@ -1795,7 +1862,7 @@ public class Script {
 
     private static final String PATH = "path";
 
-    public static void setByPathTable(String name, String path, List<Map<String, String>> list, ScriptContext context) {
+    public static void setByPathTable(String name, String path, List<Map<String, String>> list, ScenarioContext context) {
         name = StringUtils.trimToEmpty(name);
         path = StringUtils.trimToNull(path); // TODO re-factor these few lines cut and paste
         if (path == null) {

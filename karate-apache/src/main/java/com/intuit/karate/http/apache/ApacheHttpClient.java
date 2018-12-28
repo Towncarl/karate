@@ -23,14 +23,14 @@
  */
 package com.intuit.karate.http.apache;
 
+import com.intuit.karate.Config;
 import com.intuit.karate.FileUtils;
-import com.intuit.karate.ScriptContext;
+import com.intuit.karate.core.ScenarioContext;
 import org.apache.http.conn.ssl.LenientSslConnectionSocketFactory;
 
 import static com.intuit.karate.http.Cookie.*;
 
 import com.intuit.karate.http.HttpClient;
-import com.intuit.karate.http.HttpConfig;
 import com.intuit.karate.http.HttpRequest;
 import com.intuit.karate.http.HttpResponse;
 import com.intuit.karate.http.HttpUtils;
@@ -65,6 +65,7 @@ import org.apache.http.client.methods.CloseableHttpResponse;
 import org.apache.http.client.methods.HttpUriRequest;
 import org.apache.http.client.methods.RequestBuilder;
 import org.apache.http.client.utils.URIBuilder;
+import org.apache.http.config.SocketConfig;
 import org.apache.http.conn.ssl.NoopHostnameVerifier;
 import org.apache.http.conn.ssl.SSLConnectionSocketFactory;
 import org.apache.http.conn.ssl.TrustAllStrategy;
@@ -105,7 +106,7 @@ public class ApacheHttpClient extends HttpClient<HttpEntity> {
     }
 
     @Override
-    public void configure(HttpConfig config, ScriptContext context) {
+    public void configure(Config config, ScenarioContext context) {
         clientBuilder = HttpClientBuilder.create();
         charset = config.getCharset();
         if (!config.isFollowRedirects()) {
@@ -157,6 +158,8 @@ public class ApacheHttpClient extends HttpClient<HttpEntity> {
                 .setConnectTimeout(config.getConnectTimeout())
                 .setSocketTimeout(config.getReadTimeout());
         clientBuilder.setDefaultRequestConfig(configBuilder.build());
+        SocketConfig.Builder socketBuilder = SocketConfig.custom().setSoTimeout(config.getConnectTimeout());
+        clientBuilder.setDefaultSocketConfig(socketBuilder.build());
         if (config.getProxyUri() != null) {
             try {
                 URI proxyUri = new URIBuilder(config.getProxyUri()).build();
@@ -276,7 +279,7 @@ public class ApacheHttpClient extends HttpClient<HttpEntity> {
     }
 
     @Override
-    protected HttpResponse makeHttpRequest(HttpEntity entity, ScriptContext context) {
+    protected HttpResponse makeHttpRequest(HttpEntity entity, ScenarioContext context) {
         if (entity != null) {
             requestBuilder.setEntity(entity);
             requestBuilder.setHeader(entity.getContentType());

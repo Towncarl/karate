@@ -1,21 +1,38 @@
+/*
+ * The MIT License
+ *
+ * Copyright 2018 Intuit Inc.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ */
 package com.intuit.karate.junit4;
 
-import com.intuit.karate.CallContext;
+import com.intuit.karate.Resource;
 import com.intuit.karate.FileUtils;
-import com.intuit.karate.cucumber.DummyFormatter;
-import com.intuit.karate.cucumber.DummyReporter;
-import com.intuit.karate.cucumber.KarateFeature;
-import com.intuit.karate.cucumber.KarateHtmlReporter;
-import com.intuit.karate.cucumber.KarateRuntime;
-import com.intuit.karate.cucumber.KarateRuntimeOptions;
-import cucumber.runtime.RuntimeOptions;
-import cucumber.runtime.junit.FeatureRunner;
-import cucumber.runtime.junit.JUnitOptions;
-import cucumber.runtime.junit.JUnitReporter;
-import gherkin.formatter.model.Match;
-import gherkin.formatter.model.Result;
-import gherkin.formatter.model.Scenario;
-import gherkin.formatter.model.Step;
+import com.intuit.karate.RunnerOptions;
+import com.intuit.karate.core.Engine;
+import com.intuit.karate.core.Feature;
+import com.intuit.karate.core.FeatureParser;
+import com.intuit.karate.core.FeatureResult;
+import com.intuit.karate.core.ScenarioResult;
+import com.intuit.karate.core.Tags;
+import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -23,116 +40,103 @@ import java.util.List;
 import java.util.Map;
 import org.junit.Test;
 import org.junit.runner.Description;
+import org.junit.runner.notification.Failure;
 import org.junit.runner.notification.RunNotifier;
 import org.junit.runners.ParentRunner;
 import org.junit.runners.model.FrameworkMethod;
 import org.junit.runners.model.InitializationError;
+import org.junit.runners.model.Statement;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * implementation adapted from cucumber.api.junit.Cucumber
- * 
+ *
  * @author pthomas3
  */
-public class Karate extends ParentRunner<FeatureRunner> {
-    
-    private static final Logger logger = LoggerFactory.getLogger(Karate.class);
-    
-    private final List<FeatureRunner> children;
-    
-    private final JUnitReporter reporter;
-    private final KarateHtmlReporter htmlReporter;    
-    private final Map<Integer, KarateFeatureRunner> featureMap;
+public class Karate extends ParentRunner<Feature> {
 
-    public Karate(Class clazz) throws InitializationError, IOException {
+    private static final Logger logger = LoggerFactory.getLogger(Karate.class);
+
+    private final List<Feature> children;
+    private final Map<String, FeatureInfo> featureMap;
+    private final String tagSelector;
+
+    public Karate(Class<?> clazz) throws InitializationError, IOException {
         super(clazz);
         List<FrameworkMethod> testMethods = getTestClass().getAnnotatedMethods(Test.class);
         if (!testMethods.isEmpty()) {
             logger.warn("WARNING: there are methods annotated with '@Test', they will NOT be run when using '@RunWith(Karate.class)'");
         }
-        KarateRuntimeOptions kro = new KarateRuntimeOptions(clazz);
-        RuntimeOptions ro = kro.getRuntimeOptions();
-        JUnitOptions junitOptions = new JUnitOptions(ro.getJunitOptions());
-        htmlReporter = new KarateHtmlReporter(new DummyReporter(), new DummyFormatter());
-        reporter = new JUnitReporter(htmlReporter, htmlReporter, ro.isStrict(), junitOptions) {
-            final List<Step> steps = new ArrayList();
-            final List<Match> matches = new ArrayList();
-            @Override
-            public void startOfScenarioLifeCycle(Scenario scenario) {
-                steps.clear();
-                matches.clear();
-                super.startOfScenarioLifeCycle(scenario);
-            }                       
-            @Override
-            public void step(Step step) {
-                steps.add(step);                
-            }
-            @Override
-            public void match(Match match) {
-                matches.add(match);
-            }            
-            @Override
-            public void result(Result result) {
-                Step step = steps.remove(0);
-                Match match = matches.remove(0);
-                CallContext callContext = new CallContext(null, false);
-                // all the above complexity was just to be able to do this
-                htmlReporter.karateStep(step, match, result, callContext, null);
-                // this may not work for things other than the cucumber 'native' json formatter
-                super.step(step);
-                super.match(match);
-                super.result(result);
-            }
-            @Override
-            public void eof() {
-                try {
-                    super.eof();
-                } catch (Exception e) {
-                    logger.warn("WARNING: cucumber native plugin / formatter failed: " + e.getMessage());
-                }
-            }
-        };  
-        List<KarateFeature> list = KarateFeature.loadFeatures(kro);
-        children = new ArrayList(list.size());
-        featureMap = new HashMap(list.size());
-        logger.info("Karate version: {}", FileUtils.getKarateVersion());
-        for (KarateFeature kf : list) {
-            KarateRuntime kr = kf.getRuntime(htmlReporter);
-            FeatureRunner runner = new FeatureRunner(kf.getFeature(), kr, reporter);
-            children.add(runner);
-            featureMap.put(runner.hashCode(), new KarateFeatureRunner(kf, kr));
+        RunnerOptions options = RunnerOptions.fromAnnotationAndSystemProperties(clazz);
+        List<Resource> resources = FileUtils.scanForFeatureFiles(options.getFeatures(), clazz.getClassLoader());
+        children = new ArrayList(resources.size());
+        featureMap = new HashMap(resources.size());
+        for (Resource resource : resources) {
+            Feature feature = FeatureParser.parse(resource);
+            children.add(feature);
         }
-    }
-    
-    @Override
-    public List<FeatureRunner> getChildren() {
-        return children;
-    }        
-    
-    @Override
-    protected Description describeChild(FeatureRunner child) {
-        return child.getDescription();
+        tagSelector = Tags.fromCucumberOptionsTags(options.getTags());
     }
 
     @Override
-    protected void runChild(FeatureRunner child, RunNotifier notifier) {
-        KarateFeatureRunner kfr = featureMap.get(child.hashCode());
-        KarateRuntime karateRuntime = kfr.runtime;
-        htmlReporter.startKarateFeature(kfr.feature.getFeature());
-        child.run(notifier);
-        karateRuntime.afterFeature();
-        karateRuntime.printSummary();
-        htmlReporter.endKarateFeature();
+    public List<Feature> getChildren() {
+        return children;
+    }
+
+    private static final Statement NO_OP = new Statement() {
+        @Override
+        public void evaluate() throws Throwable {
+        }
+    };
+
+    private boolean beforeClassDone;
+
+    @Override
+    protected Statement withBeforeClasses(Statement statement) {
+        if (!beforeClassDone) {
+            return super.withBeforeClasses(statement);
+        } else {
+            return statement;
+        }
+    }
+
+    @Override
+    protected Description describeChild(Feature feature) {
+        if (!beforeClassDone) {
+            try {
+                Statement statement = withBeforeClasses(NO_OP);
+                statement.evaluate();
+                beforeClassDone = true;
+            } catch (Throwable e) {
+                throw new RuntimeException(e);
+            }
+        }
+        FeatureInfo info = new FeatureInfo(feature, tagSelector);
+        featureMap.put(feature.getRelativePath(), info);
+        return info.description;
+    }
+
+    @Override
+    protected void runChild(Feature feature, RunNotifier notifier) {
+        FeatureInfo info = featureMap.get(feature.getRelativePath());
+        info.unit.run();
+        FeatureResult result = info.exec.result;
+        for (ScenarioResult sr : result.getScenarioResults()) {
+            Description scenarioDescription = FeatureInfo.getScenarioDescription(sr.getScenario());
+            notifier.fireTestStarted(scenarioDescription);
+            if (sr.isFailed()) {
+                notifier.fireTestFailure(new Failure(scenarioDescription, sr.getError()));
+            } else {
+                notifier.fireTestFinished(scenarioDescription);
+            }
+        }
+        result.printStats(null);
+        Engine.saveResultHtml(Engine.getBuildDir() + File.separator + "surefire-reports", result, null);
     }
 
     @Override
     public void run(RunNotifier notifier) {
         super.run(notifier);
-        if (reporter != null) { // can happen for zero features found
-            reporter.done();
-            reporter.close();
-        }
-    }   
+    }
 
 }

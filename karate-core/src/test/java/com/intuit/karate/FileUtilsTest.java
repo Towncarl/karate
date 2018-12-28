@@ -1,9 +1,14 @@
 package com.intuit.karate;
 
-import com.intuit.karate.cucumber.FeatureFilePath;
+import com.intuit.karate.core.Feature;
+import com.intuit.karate.core.FeatureParser;
+import com.intuit.karate.exception.KarateException;
 import java.io.File;
-import java.io.InputStream;
-import java.util.Arrays;
+import java.net.URL;
+import java.net.URLClassLoader;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.Map;
 
 import static org.junit.Assert.*;
 import org.junit.Test;
@@ -15,43 +20,83 @@ import org.slf4j.LoggerFactory;
  * @author pthomas3
  */
 public class FileUtilsTest {
-    
+
     private static final Logger logger = LoggerFactory.getLogger(FileUtilsTest.class);
-    
+
     @Test
-    public void testClassLoading() throws Exception {
-        ClassLoader cl = FileUtils.createClassLoader("src/main/java/com/intuit/karate");
-        InputStream is = cl.getResourceAsStream("StepDefs.java");
-        String s = FileUtils.toString(is);
-        assertTrue(s.trim().startsWith("/*"));
+    public void testWindowsFileNames() {
+        String path = "com/intuit/karate/cucumber/scenario.feature";
+        String fixed = FileUtils.toPackageQualifiedName(path);
+        assertEquals("com.intuit.karate.cucumber.scenario", fixed);
     }
 
     @Test
-    public void testExtractingFeaturePathFromCommandLine() {
-        String expected = "/Users/pthomas3/dev/zcode/karate/karate-junit4/src/test/java/com/intuit/karate/junit4/demos/users.feature";
-        String cwd = "/Users/pthomas3/dev/zcode/karate/karate-junit4";
-        String intelllij = "com.intellij.rt.execution.application.AppMain cucumber.api.cli.Main --plugin org.jetbrains.plugins.cucumber.java.run.CucumberJvmSMFormatter --monochrome --name ^get users and then get first by id$ --glue com.intuit.karate /Users/pthomas3/dev/zcode/karate/karate-junit4/src/test/java/com/intuit/karate/junit4/demos/users.feature";
-        String path = FileUtils.getFeaturePath(intelllij, cwd);
-        assertEquals(expected, path);
-        String eclipse = "com.intuit.karate.StepDefs - cucumber.api.cli.Main /Users/pthomas3/dev/zcode/karate/karate-junit4/src/test/java/com/intuit/karate/junit4/demos/users.feature --glue classpath: --plugin pretty --monochrome";
-        path = FileUtils.getFeaturePath(eclipse, cwd);
-        assertEquals(expected, path);
+    public void testRenameZeroLengthFile() {
+        long time = System.currentTimeMillis();
+        String name = "target/" + time + ".json";
+        FileUtils.writeToFile(new File(name), "");
+        FileUtils.renameFileIfZeroBytes(name);
+        File file = new File(name + ".fail");
+        assertTrue(file.exists());
     }
-    
+
     @Test
-    public void testParsingFeatureFilePath() {
-        String path = "/foo/src/test/java/demo/test.feature";
-        File file = new File(path);
-        FeatureFilePath ffp = FileUtils.parseFeaturePath(new File(path));
-        assertEquals(file, ffp.file);
-        logger.debug("search: {}", Arrays.toString(ffp.searchPaths));
+    public void testScanFile() {
+        String relativePath = "classpath:com/intuit/karate/ui/test.feature";
+        ClassLoader cl = getClass().getClassLoader();
+        List<Resource> files = FileUtils.scanForFeatureFilesOnClassPath(cl);
+        boolean found = false;
+        for (Resource file : files) {
+            String actualPath = file.getRelativePath().replace('\\', '/');
+            if (actualPath.equals(relativePath)) {
+                String temp = FileUtils.toRelativeClassPath(file.getPath(), cl);
+                assertEquals(temp, actualPath);
+                found = true;
+                break;
+            }
+        }
+        assertTrue(found);
     }
-    
+
     @Test
-    public void testWindowsFileNames() {
-    	String path = "com/intuit/karate/cucumber/scenario.feature";
-    	String fixed = FileUtils.toPackageQualifiedName(path);
-    	assertEquals("com.intuit.karate.cucumber.scenario", fixed);
+    public void testScanFilePath() {
+        String relativePath = "classpath:com/intuit/karate/ui";
+        List<Resource> files = FileUtils.scanForFeatureFiles(true, relativePath, getClass().getClassLoader());
+        assertEquals(2, files.size());
     }
-    
+
+    @Test
+    public void testRelativePathForClass() {
+        assertEquals("classpath:com/intuit/karate", FileUtils.toRelativeClassPath(getClass()));
+    }
+
+    @Test
+    public void testGetAllClasspaths() {
+        List<URL> urls = FileUtils.getAllClassPathUrls(getClass().getClassLoader());
+        for (URL url : urls) {
+            logger.debug("url: {}", url);
+        }
+    }
+
+    private static ClassLoader getJarClassLoader() throws Exception {
+        File jar = new File("src/test/resources/karate-test.jar");
+        assertTrue(jar.exists());
+        return new URLClassLoader(new URL[]{jar.toURI().toURL()});
+    }
+
+    @Test
+    public void testUsingKarateBase() throws Exception {
+        String relativePath = "classpath:demo/jar1/caller.feature";
+        ClassLoader cl = getJarClassLoader();
+        Path path = FileUtils.fromRelativeClassPath(relativePath, cl);
+        Resource resource = new Resource(path, relativePath);
+        Feature feature = FeatureParser.parse(resource);
+        try {
+            Map<String, Object> map = Runner.runFeature(feature, null, true);
+            fail("we should not have reached here");
+        } catch (Exception e) {
+            assertTrue(e instanceof KarateException);
+        }
+    }
+
 }

@@ -23,11 +23,14 @@
  */
 package com.intuit.karate.http;
 
+import com.intuit.karate.Config;
+import com.intuit.karate.core.PerfEvent;
 import com.intuit.karate.exception.KarateException;
-import com.intuit.karate.ScriptContext;
+import com.intuit.karate.core.ScenarioContext;
 import com.intuit.karate.ScriptValue;
 import com.intuit.karate.XmlUtils;
 import com.jayway.jsonpath.DocumentContext;
+import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.util.List;
 import java.util.Map;
@@ -59,7 +62,7 @@ public abstract class HttpClient<T> {
      * @param config
      * @param context
      */
-    public abstract void configure(HttpConfig config, ScriptContext context);
+    public abstract void configure(Config config, ScenarioContext context);
 
     protected abstract T getEntity(List<MultiPartItem> multiPartItems, String mediaType);
 
@@ -79,7 +82,7 @@ public abstract class HttpClient<T> {
 
     protected abstract void buildCookie(Cookie cookie);
 
-    protected abstract HttpResponse makeHttpRequest(T entity, ScriptContext context);
+    protected abstract HttpResponse makeHttpRequest(T entity, ScenarioContext context);
 
     protected abstract String getRequestUri();
 
@@ -102,6 +105,13 @@ public abstract class HttpClient<T> {
                 mediaType = APPLICATION_OCTET_STREAM;
             }
             return getEntity(is, mediaType);
+        } else if (body.isByteArray()) {
+            byte[] bytes = body.getValue(byte[].class);
+            InputStream is = new ByteArrayInputStream(bytes);
+            if (mediaType == null) {
+                mediaType = APPLICATION_OCTET_STREAM;
+            }
+            return getEntity(is, mediaType);
         } else {
             if (mediaType == null) {
                 mediaType = TEXT_PLAIN;
@@ -110,7 +120,7 @@ public abstract class HttpClient<T> {
         }
     }
 
-    private T buildRequestInternal(HttpRequestBuilder request, ScriptContext context) {
+    private T buildRequestInternal(HttpRequestBuilder request, ScenarioContext context) {
         String method = request.getMethod();
         if (method == null) {
             String msg = "'method' is required to make an http call";
@@ -156,7 +166,7 @@ public abstract class HttpClient<T> {
                 }
             }
         }
-        HttpConfig config = context.getConfig();
+        Config config = context.getConfig();
         Map<String, Object> configHeaders = config.getHeaders().evalAsMap(context);
         if (configHeaders != null) {
             for (Map.Entry<String, Object> entry : configHeaders.entrySet()) {
@@ -174,6 +184,9 @@ public abstract class HttpClient<T> {
         }
         if (methodRequiresBody) {
             String mediaType = request.getContentType();
+            if (configHeaders != null && configHeaders.containsKey(HttpUtils.HEADER_CONTENT_TYPE)) { // edge case if config headers had Content-Type
+                mediaType = (String) configHeaders.get(HttpUtils.HEADER_CONTENT_TYPE);
+            }
             if (request.getMultiPartItems() != null) {
                 if (mediaType == null) {
                     mediaType = MULTIPART_FORM_DATA;
@@ -201,11 +214,19 @@ public abstract class HttpClient<T> {
         }
     }
 
-    public HttpResponse invoke(HttpRequestBuilder request, ScriptContext context) {
-        T body = buildRequestInternal(request, context);        
+    public HttpResponse invoke(HttpRequestBuilder request, ScenarioContext context) {        
+        T body = buildRequestInternal(request, context);
+        String perfEventName = null; // acts as a flag to report perf if not null
+        if (context.executionHook != null) {
+            perfEventName = context.executionHook.getPerfEventName(request, context);
+        }        
         try {
             HttpResponse response = makeHttpRequest(body, context);
             context.updateConfigCookies(response.getCookies());
+            if (perfEventName != null) {
+                PerfEvent pe = new PerfEvent(response.getStartTime(), response.getEndTime(), perfEventName, response.getStatus());
+                context.capturePerfEvent(pe);
+            }
             return response;
         } catch (Exception e) {
             long startTime = context.getPrevRequest().getStartTime();
@@ -225,7 +246,7 @@ public abstract class HttpClient<T> {
         }
     }
 
-    public static HttpClient construct(HttpConfig config, ScriptContext context) {
+    public static HttpClient construct(Config config, ScenarioContext context) {
         if (config.getClientInstance() != null) {
             return config.getClientInstance();
         }

@@ -46,6 +46,37 @@ public class HttpRequestBuilder {
     private ScriptValue body;
     private String method;
     private String soapAction;
+    private boolean retry;
+    private String retryUntil;
+
+    public HttpRequestBuilder copy() {
+        HttpRequestBuilder out = new HttpRequestBuilder();
+        out.url = url;
+        if (paths != null) {
+            out.paths = new ArrayList(paths);
+        }
+        if (headers != null) {
+            out.headers = new MultiValuedMap(headers);
+        }
+        if (params != null) {
+            out.params = new MultiValuedMap(params);
+        }
+        if (cookies != null) {
+            out.cookies = new LinkedHashMap(cookies);
+        }
+        if (formFields != null) {
+            out.formFields = new MultiValuedMap(formFields);
+        }
+        if (multiPartItems != null) {
+            out.multiPartItems = new ArrayList(multiPartItems);
+        }
+        if (body != null) {
+            out.body = body.copy();
+        }
+        out.method = method;
+        out.soapAction = soapAction;
+        return out;
+    }
 
     public void setUrl(String url) {
         this.url = url;
@@ -54,7 +85,23 @@ public class HttpRequestBuilder {
     public String getUrl() {
         return url;
     }
-    
+
+    private static String getFirst(MultiValuedMap map, String name) {
+        if (map == null) {
+            return null;
+        }
+        Object temp = map.getFirst(name);
+        return temp == null ? null : temp.toString();
+    }
+
+    public String getHeader(String name) {
+        return getFirst(headers, name);
+    }
+
+    public String getParam(String name) {
+        return getFirst(params, name);
+    }
+
     public String getUrlAndPath() {
         String temp = url;
         if (!temp.endsWith("/")) {
@@ -95,7 +142,7 @@ public class HttpRequestBuilder {
 
     public void setHeaders(MultiValuedMap headers) {
         this.headers = headers;
-    }        
+    }
 
     public void setHeader(String name, String value) {
         setHeader(name, Collections.singletonList(value));
@@ -185,7 +232,7 @@ public class HttpRequestBuilder {
         }
         addMultiPartItem(item);
     }
-    
+
     public void addMultiPartItem(MultiPartItem item) {
         if (multiPartItems == null) {
             multiPartItems = new ArrayList<>();
@@ -230,6 +277,18 @@ public class HttpRequestBuilder {
 
     public String getSoapAction() {
         return soapAction;
+    }
+
+    public boolean isRetry() {
+        return retryUntil != null;
+    }
+
+    public String getRetryUntil() {
+        return retryUntil;
+    }
+
+    public void setRetryUntil(String retryUntil) {
+        this.retryUntil = retryUntil;
     }
 
 }

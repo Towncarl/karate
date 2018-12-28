@@ -23,7 +23,7 @@
  */
 package com.intuit.karate;
 
-import com.intuit.karate.cucumber.FeatureWrapper;
+import com.intuit.karate.core.Feature;
 import com.jayway.jsonpath.Configuration;
 import com.jayway.jsonpath.DocumentContext;
 import com.jayway.jsonpath.JsonPath;
@@ -33,7 +33,11 @@ import com.jayway.jsonpath.spi.json.JsonProvider;
 import com.jayway.jsonpath.spi.json.JsonSmartJsonProvider;
 import com.jayway.jsonpath.spi.mapper.JsonSmartMappingProvider;
 import com.jayway.jsonpath.spi.mapper.MappingProvider;
+import de.siegmar.fastcsv.reader.CsvContainer;
+import de.siegmar.fastcsv.reader.CsvReader;
+import de.siegmar.fastcsv.reader.CsvRow;
 import java.io.IOException;
+import java.io.StringReader;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumSet;
@@ -44,7 +48,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import jdk.nashorn.api.scripting.ScriptObjectMirror;
-import net.minidev.json.JSONObject;
 import net.minidev.json.JSONStyle;
 import net.minidev.json.JSONValue;
 import net.minidev.json.reader.JsonWriter;
@@ -77,10 +80,10 @@ public class JsonUtils {
 
     }
 
-    private static class FeatureWrapperJsonWriter implements JsonWriterI<FeatureWrapper> {
+    private static class FeatureJsonWriter implements JsonWriterI<Feature> {
 
         @Override
-        public <E extends FeatureWrapper> void writeJSONString(E value, Appendable out, JSONStyle compression) throws IOException {
+        public <E extends Feature> void writeJSONString(E value, Appendable out, JSONStyle compression) throws IOException {
             JsonWriter.toStringWriter.writeJSONString("\"#feature\"", out, compression);
         }
 
@@ -89,7 +92,7 @@ public class JsonUtils {
     static { 
         // prevent things like the karate script bridge getting serialized (especially in the javafx ui)
         JSONValue.registerWriter(ScriptObjectMirror.class, new NashornObjectJsonWriter());
-        JSONValue.registerWriter(FeatureWrapper.class, new FeatureWrapperJsonWriter());
+        JSONValue.registerWriter(Feature.class, new FeatureJsonWriter());
         // ensure that even if jackson (databind?) is on the classpath, don't switch provider
         Configuration.setDefaults(new Configuration.Defaults() {
 
@@ -163,6 +166,10 @@ public class JsonUtils {
         sb.append("\"#ref:").append(o.getClass().getName()).append('"');
     }
 
+    public static String escapeValue(String raw) {
+        return JSONValue.escape(raw, JSONStyle.LT_COMPRESS);
+    }
+    
     private static void recursePretty(Object o, StringBuilder sb, int depth, Set<Object> seen) {
         if (o == null) {
             sb.append("null");
@@ -175,7 +182,7 @@ public class JsonUtils {
                     Map.Entry<String, Object> entry = iterator.next();
                     String key = entry.getKey();
                     pad(sb, depth + 1);
-                    sb.append('"').append(JSONValue.escape(key, JSONStyle.LT_COMPRESS)).append('"');
+                    sb.append('"').append(escapeValue(key)).append('"');
                     sb.append(':').append(' ');
                     recursePretty(entry.getValue(), sb, depth + 1, seen);
                     if (iterator.hasNext()) {
@@ -209,7 +216,7 @@ public class JsonUtils {
             }
         } else if (o instanceof String) {
             String value = (String) o;
-            sb.append('"').append(JSONValue.escape(value, JSONStyle.LT_COMPRESS)).append('"');
+            sb.append('"').append(escapeValue(value)).append('"');
         } else {
             sb.append(o);
         }
@@ -339,6 +346,21 @@ public class JsonUtils {
     public static DocumentContext fromYaml(String raw) {
         Yaml yaml = new Yaml();
         return JsonPath.parse(yaml.load(raw));
+    }
+    
+    public static DocumentContext fromCsv(String raw) {
+        CsvReader reader = new CsvReader();
+        reader.setContainsHeader(true);
+        try {
+            CsvContainer csv = reader.read(new StringReader(raw));
+            List<Map> rows = new ArrayList(csv.getRowCount());
+            for (CsvRow row : csv.getRows()) {
+                rows.add(row.getFieldMap());
+            }
+            return toJsonDoc(rows);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 
     /**

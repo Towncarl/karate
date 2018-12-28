@@ -20,29 +20,18 @@ And [Consumer Driven Contracts](https://martinfowler.com/articles/consumerDriven
 * Just *one* file can script the above aspects, simplifying the mental-model you need to have for advanced scenarios such as [Consumer Driven Contracts](https://martinfowler.com/articles/consumerDrivenContracts.html)
 * Easily integrate messaging or async flows using Java-interop if required
 * Enables consumer or even UI dev teams to work in parallel as the provider service is being developed
-* [Stand-alone executable JAR](#standalone-jar) (20 MB) which only requires a JRE to run, ideal for web-developers or anyone who needs to quickly experiment with services.
+* [Stand-alone executable JAR](#standalone-jar) (17 MB) which only requires a JRE to run, ideal for web-developers or anyone who needs to quickly experiment with services.
 * Built-in [CORS](#configure-cors) support for the ease of web-dev teams using the mock service
 * Option to use an existing certificate and private-key for server-side SSL - making it easier for UI dev / browser consumers in some situations
 * Configure a 'global' response header routine, ideal for browser consumers to add headers common for *all* responses - yet dynamic if needed
 * Provider service dev team can practice TDD using the mock + contract-test
 * The mock + contract-test serves as the ultimate form of documentation of the 'contract' including payload / schema details.
 
-> For the last point above - Karate will have [Spring REST Docs](https://projects.spring.io/spring-restdocs/) support built-in in the future, please [help contribute](https://github.com/intuit/karate/issues/25) to completing this if you can !
-
 ## Using
 Note that you can use this as a [stand-alone JAR executable](#standalone-jar) which means that you don't even need to compile Java or use an IDE. If you need to embed the mock-server into a JUnit test, you can easily do so.
 
 ### Maven
-Note that this includes the [`karate-apache`](https://github.com/intuit/karate#maven) dependency for convenience.
-
-```xml
-<dependency>
-    <groupId>com.intuit.karate</groupId>
-    <artifactId>karate-netty</artifactId>
-    <version>${karate.version}</version>
-    <scope>test</scope>
-</dependency>  
-```
+The [Netty](https://netty.io) based capabilities are included when you use `karate-apache` (or `karate-jersey`), so there is no extra dependency needed besides what is outlined in the [main documentation](https://github.com/intuit/karate#maven).
 
 ## Consumer-Provider Example
 
@@ -158,10 +147,10 @@ java -jar karate.jar -e e2e my-test.feature
 ```
 
 #### `karate-config.js`
-If [`karate-config.js`](https://github.com/intuit/karate#configuration) exists in the current working directory, it will be used. You can specify a full path by setting the system property `karate.config`. Note that this is an easy way to set a bunch of variables, just return a JSON with the keys and values you need.
+If [`karate-config.js`](https://github.com/intuit/karate#configuration) exists in the current working directory, it will be used. You can specify a full path by setting the system property `karate.config.dir`. Note that this is an easy way to set a bunch of variables, just return a JSON with the keys and values you need.
 
 ```
-java -jar -Dkarate.config=somedir/my-config.js karate.jar my-test.feature
+java -jar -Dkarate.config.dir=parentdir/somedir karate.jar my-test.feature
 ```
 
 And you can even set or over-ride variable values via the command line by using the `-a` (args) option:
@@ -244,6 +233,29 @@ And `FeatureServer` has a `stop()` method that will [stop](#stopping) the server
 
 You can look at this demo example for reference: [ConsumerUsingMockTest.java](../karate-demo/src/test/java/mock/contract/ConsumerUsingMockTest.java) - note how the dynamic port number can be retrieved and passed to other elements in your test set-up.
 
+## Within a Karate Test
+Teams that are using the [standalone JAR](#standalone-jar) and *don't* want to use Java at all can directly start a mock from within a Karate test script using [Java interop](https://github.com/intuit/karate#calling-java). The code that starts a mock server is quite simple and can be wrapped in a JavaScript function as follows:
+
+```javascript
+function() {
+  var Mock = Java.type('com.intuit.karate.netty.FeatureServer');
+  var file = new java.io.File('src/test/java/mock/web/cats-mock.feature');
+  var server = Mock.start(file, 0, false, null);
+  return server.port;
+}
+```
+
+Now using this in a Karate test is simple. This example also shows how [conditional logic](https://github.com/intuit/karate#conditional-logic) can be used effectively.
+
+```feature
+Background:
+    * def starter = read('start-mock.js')
+    * def port = karate.env == 'mock' ? starter() : 8080
+    * url 'http://localhost:' + port + '/cats'
+```
+
+For the full example, look at [`cats-test.feature`](../karate-demo/src/test/java/mock/web/cats-test.feature).
+
 # Server Life Cycle
 Writing a mock can get complicated for real-life API interactions, and most other frameworks attempt to solve this using declarative approaches, such as expecting you to create a large, complicated JSON to model all requests and responses. You can think of Karate's approach as combining the best of both the worlds of declarative and imperative programming. Combined with the capability to maintain state in the form of JSON objects in memory, and Karate's native support for [Json-Path](https://github.com/intuit/karate#jsonpath-filters), XML and [`embedded expressions`](https://github.com/intuit/karate#embedded-expressions) - you have a very powerful toolkit at your disposal. And Karate's intelligent defaults keep things dead simple.
 
@@ -285,10 +297,14 @@ Scenario:
 
 The main [Karate](https://github.com/intuit/karate) documentation explains things like the [`def`](https://github.com/intuit/karate#def), [`set`](https://github.com/intuit/karate#set) and the [`eval`](https://github.com/intuit/karate#eval) keywords, [Karate expressions](https://github.com/intuit/karate#karate-expressions) and [JsonPath](https://github.com/intuit/karate#get-short-cut).
 
-The other parts of the simple example above are explained in the sections below. 
+The other parts of the simple example above are explained in the sections below.
+
+> Note that [`karate-config.js`](https://github.com/intuit/karate#configuration) does *not* come into the picture here. But if for some reason you need to re-use an existing one, you can do this in the `Background`: `* call read('classpath:karate-config.js')` - and you can use any JS or JSON file in this manner to initialize a bunch of seed data or "intial state".
 
 ## `Scenario`
 A server-side `Feature` file can have multiple `Scenario` sections in it. Each Scenario is expected to have a JavaScript expression as the content of the `Scenario` description which we will refer to as the "request matcher".
+
+> Note that the [`Scenario Outline`](https://github.com/intuit/karate#data-driven-tests) is *not* supported when Karate is in "mock mode".
 
 On each incoming HTTP request, the `Scenario` expressions are evaluated in order, starting from the first one within the `Feature`. If the expression evaluates to `true`, the body of the `Scenario` is evaluated and the HTTP response is returned.
 
@@ -303,6 +319,9 @@ You can use these in the "request matcher" described above. This is how you can 
 
 ## `request`
 This variable holds the value of the request body. It will be a JSON or XML object if it can be parsed as such. Else it would be a string.
+
+## `requestBytes`
+Rarely used, unless you are expecting incoming binary content. This variable holds the value of the raw request bytes. Here is an example: [`_mock.feature`](src/test/java/com/intuit/karate/mock/_mock.feature).
 
 ## `requestUrlBase`
 Holds the value of the "base URL". This will be in the form `http://somehost:8080` and will include the port number if needed. It may start with `https` if applicable.
@@ -446,6 +465,20 @@ Use this to add an artificial delay instead of calling `Thread.sleep()` directly
 ```
 
 Refer to this example: [`payment-service-proxy.feature`](../karate-demo/src/test/java/mock/contract/payment-service-proxy.feature).
+
+### `configure afterScenario`
+Just like the above, but you can set this "globally" for all route-handlers in the [`Background`](#background). Here is an example of setting a random delay between 200 to 600 milliseconds.
+
+```cucumber
+* configure afterScenario =
+"""
+function fn(){
+    var millis = 200 + Math.random() * 400;
+    karate.log('sleeping for:', millis, 'millis')
+    java.lang.Thread.sleep(millis); 
+}
+"""
+```
 
 ## `karate.abort()`
 Stop evaluating any more steps in the `Scenario` and return the `response`. Useful when combined with [`eval`](https://github.com/intuit/karate#eval) and conditional checks in JavaScript.

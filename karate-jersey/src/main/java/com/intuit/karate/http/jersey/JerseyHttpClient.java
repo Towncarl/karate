@@ -23,11 +23,11 @@
  */
 package com.intuit.karate.http.jersey;
 
-import com.intuit.karate.ScriptContext;
+import com.intuit.karate.Config;
+import com.intuit.karate.core.ScenarioContext;
 import com.intuit.karate.ScriptValue;
 import static com.intuit.karate.http.Cookie.*;
 import com.intuit.karate.http.HttpClient;
-import com.intuit.karate.http.HttpConfig;
 import com.intuit.karate.http.HttpRequest;
 import com.intuit.karate.http.HttpResponse;
 import com.intuit.karate.http.HttpUtils;
@@ -72,7 +72,7 @@ public class JerseyHttpClient extends HttpClient<Entity> {
     private Charset charset;
 
     @Override
-    public void configure(HttpConfig config, ScriptContext context) {
+    public void configure(Config config, ScenarioContext context) {
         ClientConfig cc = new ClientConfig();
         // support request body for DELETE (non-standard)
         cc.property(ClientProperties.SUPPRESS_HTTP_COMPLIANCE_VALIDATION, true);
@@ -163,7 +163,13 @@ public class JerseyHttpClient extends HttpClient<Entity> {
         for (Entry<String, List> entry : fields.entrySet()) {
             map.put(entry.getKey(), entry.getValue());
         }
-        return Entity.entity(map, getMediaType(mediaType));
+        // special handling, charset is not valid in content-type header here
+        int pos = mediaType.indexOf(';');
+        if (pos != -1) {
+            mediaType = mediaType.substring(0, pos);
+        }
+        MediaType mt = MediaType.valueOf(mediaType);
+        return Entity.entity(map, mt);
     }
 
     @Override
@@ -181,15 +187,6 @@ public class JerseyHttpClient extends HttpClient<Entity> {
                 ct = HttpUtils.getContentType(sv);
             }
             MediaType itemType = MediaType.valueOf(ct);
-            if (HttpUtils.isPrintable(ct)) {
-                Charset cs = HttpUtils.parseContentTypeCharset(mediaType);
-                if (cs == null) {
-                    cs = charset;
-                }
-                if (cs != null) {
-                    itemType = itemType.withCharset(cs.name());
-                }
-            }
             if (name == null) { // most likely multipart/mixed
                 BodyPart bp = new BodyPart().entity(sv.getAsString()).type(itemType);
                 multiPart.bodyPart(bp);
@@ -214,7 +211,7 @@ public class JerseyHttpClient extends HttpClient<Entity> {
     }
 
     @Override
-    public HttpResponse makeHttpRequest(Entity entity, ScriptContext context) {
+    public HttpResponse makeHttpRequest(Entity entity, ScenarioContext context) {
         String method = request.getMethod();
         if ("PATCH".equals(method)) { // http://danofhisword.com/dev/2015/09/04/Jersey-Client-Http-Patch.html
             builder.property(HttpUrlConnectorProvider.SET_METHOD_WORKAROUND, true);
